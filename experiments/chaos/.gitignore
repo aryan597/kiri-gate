@@ -1,3 +1,5 @@
 __pycache__/
 _old/
 COMMENT_*.md
+*.log
+results/stripe/*_fake/

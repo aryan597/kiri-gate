@@ -1,4 +1,4 @@
-﻿# kiri-gate
+# kiri-gate
 
 **A gate in front of your AI agent's tools. It acts on what can be undone and asks about what can't.**
 
@@ -19,6 +19,14 @@ with gate.goal("Reply to the recruiter"):
     edit_file("reply.txt", "Hi")          # runs
     send_email("r@company.com", "Hi")     # stops and asks you first
 ```
+
+## Agents also do things twice
+
+When a write goes through but the response is lost, the agent or its framework retries and the action happens again. Against real Stripe test mode, a LangGraph agent charged a £12 card **twice in 5 of 5 runs** with LangGraph's default retry policy, and **5 of 5** when the model decided on its own, even with "charge exactly once" in the prompt. An idempotency key built from the tool and its arguments brought both to **0**.
+
+![One £12 charge, billed twice, every time](experiments/chaos/charts/stripe.png)
+
+The same happens with LangChain's `ToolRetryMiddleware` (10 of 10 runs, see [langchain#40688](https://github.com/langchain-ai/langchain/issues/40688)). Full study, code and results: [experiments/chaos](experiments/chaos). Argument-based idempotency keys for write tools are coming to kiri-gate in v0.2.
 
 ## Install
 
