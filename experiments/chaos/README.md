@@ -20,7 +20,9 @@ LangChain `create_agent` on langchain 1.4.2. The first write executes, then rais
 | own ReAct loop, no key | 4/10 |
 | own ReAct loop, key derived from (tool, args) | 0/10 |
 
-- In every duplicate run, the agent's final message said the action succeeded.
+- No duplicate run told the user anything went wrong. When the agent replied at all, it said the action succeeded.
+- When nothing was written (timeout or 429), default retry completed 20/20. Retry limited to read-only tools completed 2/20.
+- With the error handed back, the model called the read tool once in 30 fault runs before re-sending.
 
 ## Real Stripe test mode, LangGraph agent
 
@@ -34,9 +36,8 @@ LangChain `create_agent` on langchain 1.4.2. The first write executes, then rais
 | Stripe `Idempotency-Key` = hash(run, tool, args) | 0/5 |
 
 - LangGraph's `default_retry_on` returns `True` for any exception outside a list of Python built-ins, and `stripe.APIConnectionError` isn't on that list, so the node is retried.
-- With no retry at all, the model re-charged in every run. That's despite the prompt saying "Charge exactly once" and a `list_charges` tool being available. It never checked first.
-- Every double-charge run ended with a message like "Charged 12.00 GBP ... successfully".
-- When nothing was written (timeout or 429), default retry completed 20/20. Retry limited to read-only tools completed 2/20.
+- With no retry at all, the model re-charged in every run. That's despite the prompt saying "Charge exactly once" and a `list_charges` tool being available.
+- No double-charge run flagged a problem. 9 of the 10 ended with a message like "Charged 12.00 GBP ... successfully"; the other gave no final reply.
 
 Full tables: [`results/qwen_qwen3.5-9b/COMBINED.md`](results/qwen_qwen3.5-9b/COMBINED.md). The no-LLM version (middleware only) is in [`results/scripted/COMBINED.md`](results/scripted/COMBINED.md).
 
