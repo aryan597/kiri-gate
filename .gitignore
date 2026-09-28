@@ -3,3 +3,5 @@ __pycache__/
 *.db
 dist/
 *.egg-info/
+HANDOFF.md
+.claude/

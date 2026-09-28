@@ -1,0 +1,4 @@
+{"condition": "graph_retry", "run_id": "302b4431a7b1", "charges": 2, "tool_executions": 2, "outcome": "DUPLICATE", "final": "Done.", "error": ""}
+{"condition": "model_decides", "run_id": "f396061626cb", "charges": 1, "tool_executions": 1, "outcome": "CORRECT", "final": "Done.", "error": ""}
+{"condition": "key_call_id", "run_id": "22c45816f01f", "charges": 1, "tool_executions": 2, "outcome": "CORRECT", "final": "Done.", "error": ""}
+{"condition": "key_args", "run_id": "ef5bf3afc2f3", "charges": 1, "tool_executions": 2, "outcome": "CORRECT", "final": "Done.", "error": ""}
