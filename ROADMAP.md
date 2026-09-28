@@ -8,12 +8,17 @@ Models are getting better at *spotting* risk (AUROC 0.95 to 0.996 from Qwen 9B t
 - Scorers: local (OpenAI-compatible) and Claude
 - Decision log, terminal approval, `Denied`
 
-## v0.2: MCP proxy (next, the main product)
+## v0.2: MCP proxy and double-charge protection (done)
 `kiri-gate mcp -- npx @some/mcp-server` sits between any MCP client (Claude Desktop, Cursor, Claude Code) and any MCP server. No code changes for anyone.
 - Reads the server's tool list and classes each tool from `kiri.toml`. **Unknown tools default to IRREVERSIBLE**, so they always ask until you class them.
-- Suggests classes from tool annotations (`readOnlyHint`, `destructiveHint`) but never auto-trusts them.
-- Asks through MCP elicitation where the client supports it, and otherwise through a local approval page.
+- Suggests classes from tool annotations (`readOnlyHint`, `destructiveHint`, `openWorldHint`) but never auto-trusts them.
+- Asks through a local approval page, with a deadline set by the client's timeout.
+- Idempotency keys from the tool and its arguments, a ledger, `reconcile` and `NotExecuted`, in the library and the proxy.
 - Every decision goes into the log.
+
+## Next
+- v0.2.1: ask through MCP elicitation where the client supports it.
+- A demo gif: an email send being caught in Claude Desktop.
 
 ## v0.3: learning your line
 - Per-user thresholds from the log: approve something often enough and it stops asking, but only for UNDOABLE.

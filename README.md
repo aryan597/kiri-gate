@@ -26,7 +26,43 @@ When a write goes through but the response is lost, the agent or its framework r
 
 ![One £12 charge, billed twice, every time](experiments/chaos/charts/stripe.png)
 
-The same happens with LangChain's `ToolRetryMiddleware` (10 of 10 runs, see [langchain#40688](https://github.com/langchain-ai/langchain/issues/40688)). Full study, code and results: [experiments/chaos](experiments/chaos). Argument-based idempotency keys for write tools are coming to kiri-gate in v0.2.
+The same happens with LangChain's `ToolRetryMiddleware` (10 of 10 runs, see [langchain#40688](https://github.com/langchain-ai/langchain/issues/40688)). Full study, code and results: [experiments/chaos](experiments/chaos). kiri-gate now builds that key for you.
+
+## Stops double charges
+
+IRREVERSIBLE and EXTERNAL tools get a key made from the tool, its arguments and the goal. A framework retry or a model re-planning with the same arguments gets the same key, so the call can't happen twice:
+
+```python
+from kiri_gate import Gate, EXTERNAL, NotExecuted
+import stripe
+
+gate = Gate()
+
+def find_charge(order_id, amount, idempotency_key):
+    """Did an earlier, failed call go through anyway? Return its result, or None if it didn't."""
+    # Search can lag a few seconds; passing the same key to Stripe below covers that gap.
+    found = stripe.PaymentIntent.search(query=f"metadata['kiri_key']:'{idempotency_key}'")
+    return found.data[0].id if found.data else None
+
+@gate.tool(EXTERNAL, reconcile=find_charge)
+def charge(order_id: str, amount: int, idempotency_key: str = None):
+    try:
+        pi = stripe.PaymentIntent.create(amount=amount, currency="gbp", payment_method="pm_card_visa",
+                                         confirm=True, metadata={"kiri_key": idempotency_key},
+                                         idempotency_key=idempotency_key)
+    except stripe.InvalidRequestError as e:
+        raise NotExecuted(str(e))   # a 400: nothing happened, so a retry may run
+    return pi.id
+```
+
+- **Already done:** an identical call returns the saved result and doesn't run or ask.
+- **Failed, maybe done** (the response was lost): kiri-gate never runs it blindly. It calls `reconcile` to check, and asks you if there's no `reconcile` or it can't tell.
+- **Still running:** an identical call is refused.
+- **`NotExecuted`:** raise it when you know nothing happened, and a retry runs normally.
+- **Key injection:** if the tool has an `idempotency_key` parameter, kiri-gate fills it in, so you can pass it on to Stripe.
+- Keys last 24 hours, like Stripe's. `Gate(ledger=Ledger("kiri.db"))` keeps them across restarts. `@gate.tool(UNDOABLE, dedupe=True)` opts other tools in.
+
+In the Stripe repro above, wrapping the charge in kiri-gate gave **1 charge** under LangGraph's default retry policy ([experiments/chaos](experiments/chaos), `kiri_gate` condition, offline fake Stripe). The MCP proxy does the same for every non-READ tool.
 
 ## Install
 
@@ -41,7 +77,60 @@ Not on PyPI yet. Or clone it and run `python examples/quickstart.py` to see it a
 1. **Wrap your own tools** with `@gate.tool(CLASS)`, as above. This works with any agent loop that calls Python functions.
 2. **Let a model decide undoable edits** with a scorer (below). Anything irreversible or external still asks you.
 3. **Plug in your own approval**, such as Slack, a web page or your phone, through `ask=`.
-4. **In front of MCP servers**: coming in v0.2. One command will put the gate in front of any MCP server for Claude Desktop, Cursor or Claude Code.
+4. **In front of any MCP server**: `kiri-gate mcp -- <server command>`. No code changes to the client or the server. See [Use with Claude Desktop](#use-with-claude-desktop).
+
+## Use with Claude Desktop
+
+`kiri-gate mcp` sits between Claude Desktop and a stdio MCP server. Every message passes through, except tool calls, which go through the gate first.
+
+1. Install it into a Python that Claude Desktop can start:
+
+   ```
+   pip install git+https://github.com/aryan597/kiri-gate
+   ```
+
+2. In `%APPDATA%\Claude\claude_desktop_config.json`, put `python -m kiri_gate mcp ... --` in front of the server's own command. This wraps the filesystem server:
+
+   ```json
+   {
+     "mcpServers": {
+       "filesystem": {
+         "command": "python",
+         "args": [
+           "-m", "kiri_gate", "mcp",
+           "--config", "C:\Users\you\.kiri\filesystem.toml",
+           "--log", "C:\Users\you\.kiri\kiri.db",
+           "--name", "filesystem",
+           "--",
+           "npx", "-y", "@modelcontextprotocol/server-filesystem", "C:\Users\you\Documents"
+         ]
+       }
+     }
+   }
+   ```
+
+   Use absolute paths. Claude Desktop starts servers in a folder you don't choose, so relative paths end up somewhere odd. If `python` isn't on your PATH, use its full path, e.g. `C:\Users\you\AppData\Local\Programs\Python\Python312\python.exe` (in JSON, double each backslash).
+
+3. Quit Claude Desktop fully (tray icon, Quit) and start it again.
+
+4. Open the approval page at **http://127.0.0.1:8766**. It also opens by itself when a call needs you and no tab is watching.
+
+**First run.** When Claude Desktop lists the server's tools, kiri-gate writes a draft `--config` file. It suggests a class for each tool from the server's annotations, but puts them all under `[unconfirmed]`, and unconfirmed tools always ask. Move a line to `[tools]` once you agree with its class, then restart Claude Desktop:
+
+```toml
+[tools]
+read_text_file = "read"
+write_file = "undoable"
+
+[unconfirmed]
+move_file = "irreversible"  # destructiveHint
+```
+
+**Asking.** Waiting requests show up on the page with Allow, Deny and editable arguments. Claude Desktop gives up on a tool call after 60 seconds and can't be told to wait longer, so kiri-gate denies anything unanswered at 55 seconds (`--ask-timeout`). The model is told the call did not run and where you can approve it. The Log tab shows every decision.
+
+**Several servers.** Wrap each one the same way. They share one approval page: the first to start hosts it and the rest send their requests to it. Give each server its own `--config` file and the same `--log`.
+
+Other options: `--port` (default 8766), `--no-open`.
 
 ## The rule
 
@@ -74,6 +163,6 @@ The scorer uses the same prompt as ask-or-act, so the benchmark tells you what t
 
 ## Status
 
-v0.1, core only. No dependencies, Python 3.9+. See [ROADMAP.md](ROADMAP.md). The MCP proxy is next.
+v0.2: the core gate, double-charge protection, the MCP proxy and the approval page. No dependencies, Python 3.9+. See [ROADMAP.md](ROADMAP.md). Next: asking through MCP elicitation (v0.2.1).
 
 MIT licensed.

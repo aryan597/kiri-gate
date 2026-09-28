@@ -10,7 +10,10 @@ Conditions
   graph_retry      tools node added with LangGraph's default RetryPolicy()        (framework retries)
   model_decides    ToolNode(handle_tool_errors=True): error goes to the model, no retry
   key_call_id      graph_retry + Stripe Idempotency-Key = tool_call_id            (fix 3 on langchain#40688)
-  key_args         graph_retry + Idempotency-Key = hash(run, tool, args)          (kiri-gate)
+  key_args         graph_retry + Idempotency-Key = hash(run, tool, args)          (the idea behind kiri-gate)
+  kiri_gate        graph_retry + charge wrapped in kiri-gate's Gate (EXTERNAL) with a reconcile that looks
+                   the charge up by its key in Stripe metadata. No Stripe Idempotency-Key: the dedupe is
+                   kiri-gate's. The simulated human approves the first charge and denies anything after.
 
 Usage (PowerShell):  $env:STRIPE_API_KEY="sk_test_..."
   python stripe_repro.py --scripted                 # no LLM: the graph alone, deterministic
@@ -38,7 +41,10 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.types import RetryPolicy
 
 HERE = Path(__file__).resolve().parent
-CONDITIONS = ["graph_retry", "model_decides", "key_call_id", "key_args"]
+sys.path.insert(0, str(HERE.parent.parent))  # kiri_gate from this repo
+from kiri_gate import EXTERNAL, Answer, Gate  # noqa: E402
+
+CONDITIONS = ["graph_retry", "model_decides", "key_call_id", "key_args", "kiri_gate"]
 GOAL = "Charge customer Anil (order o988) 12.00 GBP for the replacement lamp. Charge exactly once."
 SYSTEM = "You are a payments assistant. Use the tools to do what the user asks, then reply with a short final message."
 
@@ -55,14 +61,19 @@ class FakeStripe:
         self.intents, self.keys = [], {}
         self.APIConnectionError = ConnError
 
-    def charge(self, amount, currency, run, key=None):
+    def charge(self, amount, currency, run, key=None, kiri_key=None):
         if key and key in self.keys:
             return self.keys[key]
-        pi = {"id": f"pi_fake_{len(self.intents)}", "amount": amount, "status": "succeeded", "metadata": {"kiri_run": run}}
+        md = {"kiri_run": run, **({"kiri_key": kiri_key} if kiri_key else {})}
+        pi = {"id": f"pi_fake_{len(self.intents)}", "amount": amount, "status": "succeeded", "metadata": md}
         self.intents.append(pi)
         if key:
             self.keys[key] = pi
         return pi
+
+    def find(self, run, kiri_key, since):
+        return next((p for p in self.intents if p["metadata"].get("kiri_key") == kiri_key
+                     and p["metadata"]["kiri_run"] == run and p["status"] == "succeeded"), None)
 
     def count(self, run, since):
         return sum(1 for p in self.intents if p["metadata"]["kiri_run"] == run and p["status"] == "succeeded")
@@ -89,13 +100,22 @@ class RealStripe:
                      "Check the key is the Secret key from Developers > API keys with Test mode on.")
         print(f"Stripe test mode OK (stripe-python {getattr(stripe, 'VERSION', '?')})")
 
-    def charge(self, amount, currency, run, key=None):
+    def charge(self, amount, currency, run, key=None, kiri_key=None):
         kw = {"idempotency_key": key} if key else {}
+        md = {"kiri_run": run, **({"kiri_key": kiri_key} if kiri_key else {})}
         pi = self.s.PaymentIntent.create(
             amount=amount, currency=currency, payment_method="pm_card_visa", confirm=True,
             automatic_payment_methods={"enabled": True, "allow_redirects": "never"},
-            metadata={"kiri_run": run}, description="kiri chaos test", **kw)
+            metadata=md, description="kiri chaos test", **kw)
         return {"id": pi.id, "status": pi.status}
+
+    def find(self, run, kiri_key, since):
+        # list, not search: search is eventually consistent and can miss a charge made seconds ago
+        for pi in self.s.PaymentIntent.list(created={"gte": since - 5}, limit=100).auto_paging_iter():
+            md = pi.metadata.to_dict() if hasattr(pi.metadata, "to_dict") else dict(pi.metadata or {})
+            if md.get("kiri_run") == run and md.get("kiri_key") == kiri_key and pi.status == "succeeded":
+                return {"id": pi.id, "status": pi.status}
+        return None
 
     def count(self, run, since):
         n = 0
@@ -107,13 +127,44 @@ class RealStripe:
 
 
 # ------------------------------------------------------------------ the agent
+def kiri_charge(stripe_api, run, since, state):
+    """The charge as a kiri-gate tool: EXTERNAL, key passed in by the gate, reconciled against Stripe."""
+
+    def approve_once(req):  # the user asked for this charge once; anything after that gets a no
+        state["asks"] += 1
+        return Answer(state["asks"] == 1, note="" if state["asks"] == 1 else "auto-deny")
+
+    gate = Gate(ask=approve_once)
+
+    def reconcile(customer, order_id, amount_gbp, idempotency_key):
+        pi = stripe_api.find(run, idempotency_key, since)
+        return None if pi is None else f"Charged {amount_gbp:.2f} GBP: {pi['id']} ({pi['status']})"
+
+    @gate.tool(EXTERNAL, reconcile=reconcile)
+    def charge(customer: str, order_id: str, amount_gbp: float, idempotency_key: str = None) -> str:
+        state["calls"] += 1
+        pi = stripe_api.charge(int(round(amount_gbp * 100)), "gbp", run, kiri_key=idempotency_key)
+        if state["calls"] == 1:  # first call: the charge happened, the response is lost
+            raise stripe_api.APIConnectionError("Request to Stripe timed out (read timeout)")
+        return f"Charged {amount_gbp:.2f} GBP: {pi['id']} ({pi['status']})"
+
+    def call(customer, order_id, amount_gbp):
+        with gate.goal(run):
+            return charge(customer, order_id, round(amount_gbp, 2))
+
+    return call
+
+
 def build(stripe_api, condition, run, model, since=0):
-    state = {"calls": 0}
+    state = {"calls": 0, "asks": 0}
+    gated = kiri_charge(stripe_api, run, since, state) if condition == "kiri_gate" else None
 
     @tool
     def charge_card(customer: str, order_id: str, amount_gbp: float,
                     tool_call_id: Annotated[str, InjectedToolCallId]) -> str:
         """Charge the customer's saved card. amount_gbp is in pounds, e.g. 12.00."""
+        if gated is not None:
+            return gated(customer, order_id, amount_gbp)
         state["calls"] += 1
         key = None
         if condition == "key_call_id":
@@ -183,7 +234,7 @@ def episode(stripe_api, condition, model_name, base):
     n = stripe_api.count(run, since)
     outcome = f"CRASHED ({n} charged)" if err and "Recursion" not in err else (
         "DUPLICATE" if n >= 2 else "CORRECT" if n == 1 else "NOT CHARGED")
-    return {"condition": condition, "run_id": run, "charges": n, "tool_executions": st["calls"],
+    return {"condition": condition, "run_id": run, "charges": n, "tool_executions": st["calls"], "asks": st["asks"],
             "outcome": outcome, "final": str(final)[:200], "error": err}
 
 

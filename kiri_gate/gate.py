@@ -9,6 +9,10 @@ Rules, in order:
 
 A tool's class is fixed when it's registered and can't be registered twice.
 The agent never holds the real function; it only gets the gated wrapper.
+
+Doing things twice: IRREVERSIBLE and EXTERNAL calls are deduped by default (see ledger.py). An identical
+call that already succeeded returns the saved result and doesn't run. One that failed may have happened
+anyway, so it's reconciled (if the tool has a reconcile function) or asked about. It never runs blindly.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional
 
 from kiri_gate.classes import Class, always_asks
+from kiri_gate.ledger import CLAIMED, DONE, KEY_ARG, UNKNOWN, Ledger, make_key
 from kiri_gate.log import DecisionLog
 
 _goal: contextvars.ContextVar[str] = contextvars.ContextVar("kiri_goal", default="")
@@ -29,6 +34,11 @@ _goal: contextvars.ContextVar[str] = contextvars.ContextVar("kiri_goal", default
 
 class Denied(Exception):
     """Raised inside the agent's call when a human says no. Agents should treat it as a normal tool error."""
+
+
+class NotExecuted(Exception):
+    """Raise this from a tool when you know nothing happened (e.g. a 400, or a 429 before the request ran).
+    The claim is released, so a retry can run."""
 
 
 class RegistryError(Exception):
@@ -59,6 +69,16 @@ class _Tool:
     cls: Class
     fn: Callable
     description: str = ""
+    dedupe: bool = False
+    reconcile: Optional[Callable[..., Any]] = None
+    takes_key: bool = False        # fn has an idempotency_key parameter
+
+
+def _takes_key(fn: Callable) -> bool:
+    try:
+        return KEY_ARG in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 @dataclass
@@ -67,6 +87,7 @@ class Gate:
     scorer: Optional[Callable[[str, str, Dict[str, Any]], float]] = None
     threshold: float = 0.5
     log: Optional[DecisionLog] = None
+    ledger: Optional[Ledger] = None
     _tools: Dict[str, _Tool] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -74,13 +95,21 @@ class Gate:
         if self.ask is None:
             from kiri_gate.ask import terminal
             self.ask = terminal
+        if self.ledger is None:
+            self.ledger = Ledger()
         if not 0.0 <= self.threshold <= 1.0:
             raise ValueError("threshold must be between 0 and 1")
 
     # ---- registration --------------------------------------------------------
 
-    def tool(self, cls: Class, name: Optional[str] = None, description: str = ""):
-        """Decorator: @gate.tool(EXTERNAL) def send_email(...)."""
+    def tool(self, cls: Class, name: Optional[str] = None, description: str = "",
+             dedupe: Optional[bool] = None, reconcile: Optional[Callable[..., Any]] = None):
+        """Decorator: @gate.tool(EXTERNAL) def send_email(...).
+
+        dedupe: default on for IRREVERSIBLE and EXTERNAL. Pass True to opt another class in.
+        reconcile: called with the same arguments when an identical earlier call failed. Return the result
+                   if the effect already happened, or None if it didn't.
+        """
         if not isinstance(cls, Class):
             raise RegistryError("class must be READ, UNDOABLE, IRREVERSIBLE or EXTERNAL")
 
@@ -89,7 +118,9 @@ class Gate:
             with self._lock:
                 if tname in self._tools:
                     raise RegistryError(f"tool '{tname}' is already registered as {self._tools[tname].cls.name}")
-                self._tools[tname] = _Tool(tname, cls, fn, description or (inspect.getdoc(fn) or "").split("\n")[0])
+                self._tools[tname] = _Tool(tname, cls, fn, description or (inspect.getdoc(fn) or "").split("\n")[0],
+                                           always_asks(cls) if dedupe is None else bool(dedupe), reconcile,
+                                           _takes_key(fn))
 
             @functools.wraps(fn)
             def gated(*args, **kwargs):
@@ -100,8 +131,9 @@ class Gate:
 
         return wrap
 
-    def register(self, fn: Callable, cls: Class, name: Optional[str] = None, description: str = "") -> Callable:
-        return self.tool(cls, name, description)(fn)
+    def register(self, fn: Callable, cls: Class, name: Optional[str] = None, description: str = "",
+                 dedupe: Optional[bool] = None, reconcile: Optional[Callable[..., Any]] = None) -> Callable:
+        return self.tool(cls, name, description, dedupe, reconcile)(fn)
 
     def classes(self) -> Dict[str, Class]:
         return {n: t.cls for n, t in self._tools.items()}
@@ -131,19 +163,85 @@ class Gate:
             raise RegistryError(f"unknown tool '{name}'")
         bound = inspect.signature(tool.fn).bind(*args, **kwargs)
         bound.apply_defaults()
-        call_args = dict(bound.arguments)
+        return self.run(name, dict(bound.arguments))
+
+    def run(self, name: str, args: Dict[str, Any], must_ask: str = "") -> Any:
+        """Like call, but with the arguments already as a dict (e.g. from an MCP tools/call).
+        must_ask: ask the human whatever the class, with this as the reason."""
+        tool = self._tools.get(name)
+        if tool is None:
+            raise RegistryError(f"unknown tool '{name}'")
+        call_args = dict(args)
         goal = _goal.get()
-        decision, why, conf = self._route(tool, goal, call_args)
+
+        key = ""
+        if tool.dedupe:
+            key = make_key(tool.name, call_args, scope=goal)
+            state, saved, err = self.ledger.get(key)
+            if state == DONE:
+                self._record(tool, goal, call_args, "deduped", "an identical call already succeeded", None, None)
+                return saved
+            if state == CLAIMED:
+                raise Denied(f"{tool.name}: identical call already running")
+            if state == UNKNOWN:
+                found = self._reconcile(tool, call_args, key)
+                if found is not None and found is not _CANT_TELL:
+                    self.ledger.done(key, found)
+                    self._record(tool, goal, call_args, "deduped", "reconciled: an identical call already happened",
+                                 None, None)
+                    return found
+                if tool.reconcile is None or found is _CANT_TELL:
+                    must_ask = (f"an identical call failed with {err or 'an error'} and may already have happened. "
+                                f"Check before approving.")
+
+        if must_ask:
+            decision, why, conf = "ask", must_ask, None
+        else:
+            decision, why, conf = self._route(tool, goal, call_args)
 
         answer: Optional[Answer] = None
         if decision == "ask":
             answer = self.ask(Request(tool.name, tool.cls, dict(call_args), goal, why, conf))
             if answer.approve and answer.args is not None:
                 call_args = answer.args
+                if tool.dedupe:
+                    key = make_key(tool.name, call_args, scope=goal)
         self._record(tool, goal, call_args, decision, why, conf, answer)
         if answer is not None and not answer.approve:
             raise Denied(f"{tool.name}: the user said no" + (f" ({answer.note})" if answer.note else ""))
-        return tool.fn(**call_args)
+
+        if not tool.dedupe:
+            return tool.fn(**call_args)
+        if not self.ledger.claim(key, tool.name, call_args):
+            state, saved, _ = self.ledger.get(key)
+            if state == DONE:  # e.g. the human edited the args into a call that had already succeeded
+                return saved
+            raise Denied(f"{tool.name}: identical call already running")
+        try:
+            result = tool.fn(**self._with_key(tool, call_args, key))
+        except NotExecuted:
+            self.ledger.release(key)
+            raise
+        except BaseException as e:
+            self.ledger.unknown(key, repr(e))
+            raise
+        self.ledger.done(key, result)
+        return result
+
+    def _with_key(self, tool: _Tool, args: Dict[str, Any], key: str) -> Dict[str, Any]:
+        if tool.takes_key and args.get(KEY_ARG) is None:
+            return dict(args, **{KEY_ARG: key})
+        return args
+
+    def _reconcile(self, tool: _Tool, args: Dict[str, Any], key: str) -> Any:
+        """The result if the earlier call happened, None if it didn't, _CANT_TELL if reconcile failed."""
+        if tool.reconcile is None:
+            return None
+        rargs = dict(args, **{KEY_ARG: key}) if _takes_key(tool.reconcile) and args.get(KEY_ARG) is None else args
+        try:
+            return tool.reconcile(**rargs)
+        except Exception:  # a broken reconcile must never mean "run it again"
+            return _CANT_TELL
 
     def _route(self, tool: _Tool, goal: str, args: Dict[str, Any]):
         if tool.cls is Class.READ:
@@ -167,3 +265,11 @@ class Gate:
                         decision=decision, why=why, confidence=conf,
                         approved=None if answer is None else answer.approve,
                         edited=bool(answer and answer.args is not None), note=answer.note if answer else "")
+
+
+class _CantTell:
+    def __repr__(self) -> str:
+        return "CANT_TELL"
+
+
+_CANT_TELL = _CantTell()

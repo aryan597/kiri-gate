@@ -32,6 +32,13 @@ class DecisionLog:
         cols = [c[0] for c in cur.description]
         return [dict(zip(cols, r)) for r in cur.fetchall()]
 
+    def recent(self, limit: int = 200) -> List[Dict[str, Any]]:
+        """Newest first."""
+        with self._lock:
+            cur = self._db.execute("SELECT * FROM decisions ORDER BY id DESC LIMIT ?", (int(limit),))
+            cols = [c[0] for c in cur.description]
+            return [dict(zip(cols, r)) for r in cur.fetchall()]
+
     def labelled(self) -> List[tuple]:
         """(confidence, 1 if approved unchanged else 0) for asked decisions that had a score."""
         return [(r["confidence"], int(r["approved"] == 1 and not r["edited"])) for r in self.rows()

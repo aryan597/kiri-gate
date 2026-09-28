@@ -20,6 +20,13 @@ class LangGraphRetry(unittest.TestCase):
     def test_args_key_dedupes_graph_retry(self):
         self.assertEqual(run("key_args")["charges"], 1)
 
+    def test_kiri_gate_charges_once(self):
+        r = run("kiri_gate")
+        self.assertEqual(r["charges"], 1)
+        self.assertEqual(r["tool_executions"], 1)  # the retry was reconciled, not run
+        self.assertEqual(r["asks"], 1)             # only the normal EXTERNAL ask for the first charge
+        self.assertEqual(r["final"], "Done.")
+
     def test_fake_stripe_idempotency(self):
         f = S.FakeStripe()
         a = f.charge(1200, "gbp", "r", "k")

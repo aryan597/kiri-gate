@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>kiri-gate</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 30 30%22%3E%3Cpath d=%22M15 3.5 L26 14.8 L15.4 26.5 L4.2 15.2 Z%22 fill=%22none%22 stroke=%22%23211F1B%22 stroke-width=%222%22/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Patrick+Hand&family=IBM+Plex+Mono:wght@400;500&family=Atkinson+Hyperlegible:wght@400;700&display=swap">
+<link rel="stylesheet" href="/kiri.css">
+<style>
+main{max-width:980px}
+.queue{display:flex;flex-direction:column;gap:22px}
+.req h2{font-size:38px;line-height:1.1;word-break:break-word}
+.req .in{display:flex;flex-direction:column;gap:14px}
+.req .top{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}
+.req .meta{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.clock{display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0}
+.clock .secs{font-family:var(--hand);font-size:44px;line-height:1}
+.clock.low .secs{color:var(--red)}
+.fuse{height:8px;border:1.5px solid var(--ink);position:relative}
+.fuse>span{position:absolute;left:0;top:0;bottom:0;background:var(--hl)}
+.fuse.low{border-color:var(--red)}.fuse.low>span{background:var(--red)}
+textarea.args{width:100%;min-height:110px;resize:vertical;font-family:var(--mono);font-size:13px;line-height:1.55;
+  background:var(--well);border:1px solid var(--inner);padding:10px 12px;color:var(--ink)}
+textarea.args:focus,input.note:focus{outline:none;background:rgba(243,217,91,.18)}
+textarea.args.bad{border-color:var(--red)}
+input.note{width:100%;height:42px;border:none;border-bottom:1.5px solid var(--ink);background:transparent;font-family:var(--hand);font-size:20px;color:var(--ink);padding:0 2px}
+input.note::placeholder{color:#8A8475}
+.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.edited{font-family:var(--mono);font-size:11px;color:var(--red)}
+.empty{display:flex;flex-direction:column;gap:12px;align-items:flex-start;padding:40px 0}
+.empty h2{font-size:34px}
+.sum{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:0 0 22px}
+.num small{font-size:12.5px;color:var(--ink2)}
+td.args{font-family:var(--mono);font-size:12px;max-width:260px;word-break:break-word;color:var(--ink2)}
+.you-no{color:var(--red)}
+@media (max-width:600px){.sum{grid-template-columns:repeat(2,minmax(0,1fr))}.req h2{font-size:30px}.clock .secs{font-size:34px}
+  table,thead,tbody,tr,td{display:block}thead{display:none}tr{border-top:1px solid #E8DFC9;padding:8px 0}td{border:none;padding:2px 0}}
+</style>
+</head>
+<body>
+<header>
+  <a class="brand" href="#" aria-label="kiri-gate" style="text-decoration:none">
+    <svg width="28" height="28" viewBox="0 0 30 30" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3.5 L26 14.8 L15.4 26.5 L4.2 15.2 Z"/><path d="M15 3.5 L15.4 26.5"/><path d="M4.2 15.2 L26 14.8"/></svg>
+    <span>kiri-gate</span>
+  </a>
+  <nav class="tabs"><a href="#" id="t-wait">Waiting</a><a href="#log" id="t-log">Log</a></nav>
+  <div class="chip"><span class="mode" id="conn"><span class="dot"></span><span>connecting</span></span></div>
+</header>
+<main id="app" aria-live="polite"></main>
+<div id="toasts" role="status" aria-live="polite"></div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const pct = (p) => p == null ? "" : Math.round(p * 100) + "%";
+const stamp = (cls) => cls ? `<span class="stamp st-${esc(cls)}">${esc(String(cls).toUpperCase())}</span>` : "";
+const pretty = (o) => JSON.stringify(o ?? {}, null, 2);
+
+let skew = 0, pending = [], shownIds = "", logRows = null, page = "";
+
+function toast(title, text, bad = true) {
+  const el = document.createElement("div");
+  el.className = "toast" + (bad ? " bad" : "");
+  el.innerHTML = `<b>${esc(title)}</b><div>${esc(text)}</div>`;
+  el.addEventListener("click", () => el.remove());
+  $("toasts").prepend(el);
+  setTimeout(() => el.remove(), 6000);
+}
+
+async function api(path, body) {
+  const opt = body === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)};
+  const r = await fetch(path, opt);
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.error || String(r.status));
+  return data;
+}
+
+function setConn(ok) {
+  $("conn").className = "mode" + (ok ? " live" : "");
+  $("conn").lastElementChild.textContent = ok ? (pending.length ? `${pending.length} waiting` : "watching") : "not connected";
+}
+
+// ---- waiting -----------------------------------------------------------------
+
+function reqCard(r) {
+  const total = Math.max(1, r.deadline - r.created);
+  return `<div class="card req${r.cls === "external" || r.cls === "irreversible" ? " red" : ""}" data-id="${esc(r.id)}"><div class="in">
+    <div class="top">
+      <div style="display:flex;flex-direction:column;gap:8px;min-width:0">
+        <div class="meta">${stamp(r.cls)}${r.source ? `<span class="kicker">${esc(r.source)}</span>` : ""}</div>
+        <h2>${esc(r.tool)}</h2>
+      </div>
+      <div class="clock" data-deadline="${r.deadline}" data-total="${total}">
+        <span class="secs">--</span><span class="kicker">until auto-deny</span>
+      </div>
+    </div>
+    <div class="fuse" data-deadline="${r.deadline}" data-total="${total}"><span></span></div>
+    ${r.goal ? `<div class="sec"><span class="kicker">Goal</span><div>${esc(r.goal)}</div></div>` : ""}
+    <div class="sec"><span class="kicker">Why asking</span><div>${esc(r.why)}${r.confidence != null ? ` <span class="muted">(model: ${pct(r.confidence)} fine)</span>` : ""}</div></div>
+    <div class="sec"><div class="row" style="justify-content:space-between"><span class="kicker">Arguments</span><span class="edited" hidden>edited</span></div>
+      <textarea class="args" spellcheck="false" aria-label="Arguments as JSON">${esc(pretty(r.args))}</textarea></div>
+    <input class="note" placeholder="Note (optional): why, for the log and the model" aria-label="Note">
+    <div class="actions">
+      <div class="row">
+        <button class="btn primary" data-act="allow">Allow</button>
+        <button class="btn danger" data-act="deny">Deny</button>
+      </div>
+      <div class="keys"><span>Edit the JSON above to change what runs.</span></div>
+    </div>
+  </div></div>`;
+}
+
+function renderWaiting() {
+  const ids = pending.map((r) => r.id).join(",");
+  if (ids === shownIds && $("app").dataset.page === "wait") return;   // never clobber an edit in progress
+  // keep cards that are still pending (with their edits), add new ones, drop finished ones
+  const keep = {};
+  document.querySelectorAll(".req").forEach((el) => { keep[el.dataset.id] = el; });
+  shownIds = ids;
+  $("app").dataset.page = "wait";
+  if (!pending.length) {
+    $("app").innerHTML = `<div class="empty"><span class="kicker">Nothing waiting</span>
+      <h2>All quiet. Keep this tab open.</h2>
+      <p class="muted" style="max-width:560px;margin:0">When the agent tries something irreversible or external, or a tool you haven't classed in <span class="mono">kiri.toml</span>, it waits here.
+      Anything not answered before the client gives up is denied, and the tool does not run.</p></div>`;
+    return;
+  }
+  const q = document.createElement("div");
+  q.className = "queue";
+  for (const r of pending) {
+    if (keep[r.id]) { q.appendChild(keep[r.id]); continue; }
+    const t = document.createElement("div");
+    t.innerHTML = reqCard(r);
+    q.appendChild(t.firstElementChild);
+  }
+  $("app").replaceChildren(q);
+  tick();
+}
+
+function tick() {
+  const now = Date.now() / 1000 + skew;
+  document.querySelectorAll(".clock").forEach((el) => {
+    const left = Math.max(0, +el.dataset.deadline - now);
+    el.querySelector(".secs").textContent = Math.ceil(left) + "s";
+    el.classList.toggle("low", left < 10);
+  });
+  document.querySelectorAll(".fuse").forEach((el) => {
+    const left = Math.max(0, +el.dataset.deadline - now);
+    el.firstElementChild.style.width = (100 * left / +el.dataset.total) + "%";
+    el.classList.toggle("low", left < 10);
+  });
+}
+
+document.addEventListener("input", (e) => {
+  if (!e.target.classList.contains("args")) return;
+  const card = e.target.closest(".req"), r = pending.find((x) => x.id === card.dataset.id);
+  let same = false, ok = true;
+  try { const v = JSON.parse(e.target.value); ok = v && typeof v === "object" && !Array.isArray(v); same = ok && JSON.stringify(v) === JSON.stringify(r.args); }
+  catch { ok = false; }
+  e.target.classList.toggle("bad", !ok);
+  card.querySelector(".edited").hidden = same;
+});
+
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("button[data-act]");
+  if (!b) return;
+  const card = b.closest(".req"), id = card.dataset.id, r = pending.find((x) => x.id === id);
+  const approve = b.dataset.act === "allow", note = card.querySelector(".note").value.trim();
+  const body = {id, approve, note};
+  if (approve) {
+    let v;
+    try { v = JSON.parse(card.querySelector(".args").value); } catch { return toast("Not valid JSON", "Fix the arguments or deny."); }
+    if (!v || typeof v !== "object" || Array.isArray(v)) return toast("Not an object", "Arguments must be a JSON object.");
+    if (r && JSON.stringify(v) !== JSON.stringify(r.args)) body.args = v;
+  }
+  card.querySelectorAll("button").forEach((x) => x.disabled = true);
+  try {
+    await api("/api/decide", body);
+    toast(approve ? "Allowed" : "Denied", `${r ? r.tool : "request"}${body.args ? " with your edits" : ""}`, !approve);
+  } catch (err) {
+    toast("Too late", err.message);
+  }
+  refresh();
+});
+
+// ---- log ---------------------------------------------------------------------
+
+function yourCall(row) {
+  if (row.decision === "act") return `<span class="muted">not asked</span>`;
+  if (row.approved === 1) return row.edited ? "allowed, edited" : "allowed";
+  if (row.note === "timed out") return `<span class="you-no">timed out</span>`;
+  return `<span class="you-no">denied</span>`;
+}
+
+function renderLog() {
+  $("app").dataset.page = "log";
+  shownIds = "";
+  const rows = logRows || [];
+  const asked = rows.filter((r) => r.decision === "ask");
+  const allowed = asked.filter((r) => r.approved === 1).length;
+  const timed = asked.filter((r) => r.approved !== 1 && r.note === "timed out").length;
+  const scored = asked.filter((r) => r.confidence != null && r.approved != null);
+  const avg = (xs) => xs.length ? pct(xs.reduce((a, r) => a + r.confidence, 0) / xs.length) : "n/a";
+  const yes = scored.filter((r) => r.approved === 1 && !r.edited), no = scored.filter((r) => !(r.approved === 1 && !r.edited));
+  $("app").innerHTML = `
+    <div class="sum">
+      <div class="num"><small>Decisions</small><b>${rows.length}</b></div>
+      <div class="num"><small>Asked you</small><b>${asked.length}</b></div>
+      <div class="num"><small>You allowed</small><b>${allowed}</b></div>
+      <div class="num r"><small>Denied / timed out</small><b>${asked.length - allowed - timed} / ${timed}</b></div>
+    </div>
+    ${scored.length ? `<p class="voice" style="margin:0 0 22px">${[
+        yes.length ? `When you allowed it unchanged (${yes.length}), the model had said ${avg(yes)} fine on average.` : "",
+        no.length ? `When you said no or edited (${no.length}), it had said ${avg(no)}.` : ""].join(" ")}</p>` : ""}
+    ${rows.length ? `<table><thead><tr><th>When</th><th>Tool</th><th>Class</th><th>Model</th><th>You</th><th>Args</th><th>Note</th></tr></thead><tbody>
+      ${rows.map((r) => `<tr>
+        <td class="mono" style="font-size:12px;white-space:nowrap">${esc(new Date(r.ts * 1000).toLocaleString())}</td>
+        <td>${esc(r.tool)}</td><td>${stamp(String(r.cls).toLowerCase())}</td>
+        <td class="mono">${r.confidence == null ? "" : pct(r.confidence)}</td>
+        <td>${yourCall(r)}</td>
+        <td class="args">${esc(String(r.args || "").slice(0, 160))}</td>
+        <td>${esc(r.note || "")}</td></tr>`).join("")}
+    </tbody></table>` : `<div class="empty"><h2>No decisions yet.</h2></div>`}`;
+}
+
+// ---- loop --------------------------------------------------------------------
+
+async function refresh() {
+  try {
+    const s = await api("/api/state");
+    skew = s.now - Date.now() / 1000;
+    pending = s.pending;
+    setConn(true);
+    document.title = pending.length ? `(${pending.length}) kiri-gate` : "kiri-gate";
+    if (page === "log") { logRows = (await api("/api/log")).rows; renderLog(); }
+    else renderWaiting();
+  } catch (e) { setConn(false); }
+}
+
+function route() {
+  page = location.hash === "#log" ? "log" : "wait";
+  $("t-wait").toggleAttribute("aria-current", page === "wait"); if (page === "wait") $("t-wait").setAttribute("aria-current", "page");
+  $("t-log").toggleAttribute("aria-current", page === "log"); if (page === "log") $("t-log").setAttribute("aria-current", "page");
+  shownIds = null;
+  refresh();
+}
+window.addEventListener("hashchange", route);
+setInterval(refresh, 1000);
+setInterval(tick, 250);
+route();
+</script>
+</body>
+</html>
