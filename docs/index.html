@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kiri: AI agents you can trust with real actions</title>
+<meta name="description" content="Open-source tools and research for AI agents that touch the real world: asking before what can't be undone, and never doing it twice.">
+<meta property="og:title" content="Kiri">
+<meta property="og:description" content="AI agents you can trust with real actions. Open-source tools and research.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cpath d='M50 8 92 50 50 92 8 50Z M50 8V92 M8 50H92' fill='none' stroke='%23211F1B' stroke-width='7'/%3E%3C/svg%3E">
+<style>
+:root{--paper:#F1ECDD;--card:#FBF8EE;--ink:#211F1B;--ink2:#57534A;--rule:#CFC6AE;--red:#A3302A;--hl:#F3D95B;--well:#F3EEDF;
+  --serif:'Iowan Old Style','Palatino Linotype',Palatino,'Book Antiqua',Georgia,serif;--mono:ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--serif);font-size:19px;line-height:1.55}
+a{color:var(--ink);text-decoration-color:var(--red);text-underline-offset:3px}
+.wrap{max-width:1040px;margin:0 auto;padding:0 28px}
+.k{font-family:var(--mono);font-size:13px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink2)}
+.red{color:var(--red)}
+nav{display:flex;align-items:center;justify-content:space-between;padding:26px 0;border-bottom:1px solid var(--rule)}
+.brand{display:flex;align-items:center;gap:12px;font-size:28px;text-decoration:none}
+nav .links{display:flex;gap:26px;font-family:var(--mono);font-size:14px}
+nav .links a{text-decoration:none;color:var(--ink2)}
+nav .links a:hover{color:var(--ink)}
+.hero{padding:88px 0 64px}
+.hero h1{font-weight:400;font-size:clamp(42px,6.4vw,78px);line-height:1.04;margin:18px 0 26px;letter-spacing:-.5px}
+.hl{background:linear-gradient(transparent 60%,var(--hl) 60%)}
+.hero p{font-size:clamp(19px,2.2vw,23px);color:var(--ink2);max-width:720px;margin:0 0 34px}
+.btns{display:flex;gap:14px;flex-wrap:wrap}
+.btn{font-family:var(--mono);font-size:15px;padding:14px 20px;text-decoration:none;border:1.5px solid var(--ink)}
+.btn.dark{background:var(--ink);color:var(--paper)}
+section{padding:64px 0;border-top:1px solid var(--rule)}
+h2{font-weight:400;font-size:clamp(32px,4vw,46px);line-height:1.1;margin:10px 0 28px}
+.three{display:grid;grid-template-columns:repeat(3,1fr);gap:28px}
+.card{background:var(--card);border:1px solid #BDB39A;padding:5px}
+.card .in{border:1px solid #D8D0BA;padding:24px 24px 22px;height:100%}
+.card h3{font-weight:400;font-size:25px;margin:8px 0 10px;line-height:1.2}
+.card p{margin:0;color:var(--ink2);font-size:17.5px}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:0;border:1.5px solid var(--ink)}
+.stat{padding:28px 26px;border-right:1px solid var(--rule)}
+.stat:last-child{border-right:0}
+.stat .n{font-size:clamp(40px,5vw,56px);line-height:1}
+.stat .n s{color:var(--ink2);text-decoration-thickness:2px;font-size:.62em;margin-right:8px}
+.stat p{margin:12px 0 0;font-size:17px;color:var(--ink2)}
+.work{display:grid;grid-template-columns:repeat(2,1fr);gap:26px}
+.work a.card{text-decoration:none;display:block;transition:transform .15s}
+.work a.card:hover{transform:translateY(-2px)}
+.tag{font-family:var(--mono);font-size:11.5px;letter-spacing:.1em;padding:3px 8px;border:1.5px solid var(--red);color:var(--red);display:inline-block}
+.tag.ink{border-color:var(--ink);color:var(--ink)}
+pre{background:var(--well);border:1px solid var(--rule);padding:22px 24px;overflow-x:auto;font-family:var(--mono);font-size:14.5px;line-height:1.6;margin:0}
+.c{color:#8a8472}
+.split{display:grid;grid-template-columns:1fr 1.25fr;gap:40px;align-items:start}
+.split>*,.three>*,.work>*,.about>*,.stats>*{min-width:0}
+.shot{border:1.5px solid var(--red);background:var(--card);padding:6px;box-shadow:0 16px 36px rgba(33,31,27,.14)}
+.shot img{width:100%;display:block}
+.about{display:grid;grid-template-columns:1.3fr 1fr;gap:40px}
+footer{border-top:1px solid var(--rule);padding:30px 0 48px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px;font-family:var(--mono);font-size:13.5px;color:var(--ink2)}
+@media (max-width:820px){
+  .three,.stats,.work,.split,.about{grid-template-columns:1fr}
+  .stat{border-right:0;border-bottom:1px solid var(--rule)} .stat:last-child{border-bottom:0}
+  nav .links{display:none} .hero{padding:56px 0 44px} section{padding:48px 0}
+  body{font-size:18px}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<nav>
+  <a class="brand" href="#"><svg width="30" height="30" viewBox="0 0 100 100" aria-hidden="true"><path d="M50 8 92 50 50 92 8 50Z M50 8V92 M8 50H92" fill="none" stroke="#211F1B" stroke-width="6"/></svg>kiri</a>
+  <div class="links"><a href="#problem">Problem</a><a href="#work">Work</a><a href="#gate">kiri-gate</a><a href="https://github.com/aryan597">GitHub</a></div>
+</nav>
+
+<header class="hero">
+  <div class="k">Open source &nbsp;/&nbsp; London</div>
+  <h1>AI agents you can trust with <span class="hl">real actions.</span></h1>
+  <p>Agents now send emails, move money and delete files. Kiri measures how they fail when that goes wrong, and builds the small, boring fixes that stop it.</p>
+  <div class="btns">
+    <a class="btn dark" href="https://github.com/aryan597/kiri-gate">Get kiri-gate</a>
+    <a class="btn" href="#work">See the research</a>
+  </div>
+</header>
+
+<section id="problem">
+  <div class="k red">The problem</div>
+  <h2>Agents are good at spotting risk.<br>They act anyway.</h2>
+  <div class="three">
+    <div class="card"><div class="in"><span class="tag">01</span><h3>They act without asking</h3><p>If an action matches what the user asked, models take it, even when it can't be undone. Every model we tested, up to Claude Opus 5, did this.</p></div></div>
+    <div class="card"><div class="in"><span class="tag">02</span><h3>They do it twice</h3><p>A payment goes through, the reply is lost, the agent retries. The customer pays twice and is told it worked.</p></div></div>
+    <div class="card"><div class="in"><span class="tag">03</span><h3>Scores hide the damage</h3><p>Two models with similar pass rates can fail very differently. One hands off to a human. The other cancels your flight.</p></div></div>
+  </div>
+</section>
+
+<section>
+  <div class="k red">What we measured</div>
+  <h2>Real numbers, from real runs.</h2>
+  <div class="stats">
+    <div class="stat"><div class="n"><s>4 to 6</s>0</div><p>unrecoverable actions per model when a simple class rule decides, across 4 models from a local 9B to Claude Opus 5.</p></div>
+    <div class="stat"><div class="n"><s>10/10</s>0/5</div><p>double charges on Stripe test mode when a response was lost. An idempotency key brought it to zero.</p></div>
+    <div class="stat"><div class="n">2,624</div><p>published τ²-bench runs graded per tool, with no LLM judge. 789 of 789 failures explained.</p></div>
+  </div>
+</section>
+
+<section id="work">
+  <div class="k red">The work</div>
+  <h2>Four things, all open source.</h2>
+  <div class="work">
+    <a class="card" href="https://github.com/aryan597/kiri-gate"><div class="in"><span class="tag">Library</span><h3>kiri-gate</h3><p>A gate in front of your agent's tools. Asks before anything that can't be undone, never runs the same thing twice, works in front of any MCP server.</p></div></a>
+    <a class="card" href="https://github.com/aryan597/ask-or-act"><div class="in"><span class="tag ink">Benchmark</span><h3>ask-or-act</h3><p>Do agents know when to ask a human? 120 labelled actions, 4 models, scored with Brier, ECE and AUROC, replicated on R-Judge.</p></div></a>
+    <a class="card" href="https://github.com/aryan597/kiri-gate/tree/main/experiments/chaos"><div class="in"><span class="tag ink">Study</span><h3>The double-charge study</h3><p>LangChain and LangGraph agents repeating refunds and charges after a timeout. Data shared on the open LangChain and LangGraph issues.</p></div></a>
+    <a class="card" href="https://github.com/aryan597/toolcard"><div class="in"><span class="tag ink">Report card</span><h3>toolcard</h3><p>Which tools agents get wrong, and how often. Per-tool grading of τ²-bench runs against ground truth.</p></div></a>
+  </div>
+</section>
+
+<section id="gate">
+  <div class="k red">kiri-gate v0.2</div>
+  <h2>Ask first. Never twice.</h2>
+  <div class="split">
+    <div>
+<pre><span class="c"># pip install git+https://github.com/aryan597/kiri-gate</span>
+from kiri_gate import Gate, EXTERNAL
+
+gate = Gate()
+
+@gate.tool(EXTERNAL)
+def send_email(to, body): ...
+
+<span class="c"># stops and asks you first.
+# the same call again after a
+# timeout is checked, not re-run.</span>
+send_email("r@company.com", "Hi")</pre>
+      <p style="color:var(--ink2);font-size:17px;margin-top:18px">Zero dependencies. Python 3.9+. Or put it in front of any MCP server with one command: <code style="font-family:var(--mono);font-size:15px">kiri-gate mcp -- &lt;server&gt;</code></p>
+    </div>
+    <div class="shot"><img src="approval.png" alt="kiri-gate approval page: a refund waiting for approval because an identical call timed out and may already have happened"></div>
+  </div>
+</section>
+
+<section>
+  <div class="about">
+    <div>
+      <div class="k red">Who</div>
+      <h2>Built by Aryan Somayajula.</h2>
+      <p style="color:var(--ink2)">AI engineer in London. Kiri started as the safety layer in NestShift, a home-energy agent that wasn't allowed to do anything to a house on its own. That turned out to be the part that mattered.</p>
+      <p style="color:var(--ink2)">Everything here is built in public, with the limits written down next to the results.</p>
+    </div>
+    <div class="card" style="align-self:start"><div class="in">
+      <div class="k">Get in touch</div>
+      <p style="margin:12px 0 0;font-size:18px;line-height:2">
+        <a href="https://github.com/aryan597">github.com/aryan597</a><br>
+        <a href="https://linkedin.com/in/somayajula-aryan-48852a1b5">LinkedIn</a><br>
+        <a href="mailto:somayajulaaryan@gmail.com">somayajulaaryan@gmail.com</a>
+      </p>
+    </div></div>
+  </div>
+</section>
+
+<footer><span>kiri, 2026. MIT licensed.</span><span>Ask before what can't be undone.</span></footer>
+</div>
+</body>
+</html>

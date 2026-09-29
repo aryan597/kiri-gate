@@ -2,6 +2,8 @@
 
 **A gate in front of your AI agent's tools. It acts on what can be undone and asks about what can't.**
 
+Part of [Kiri](https://aryan597.github.io/kiri-gate/): open-source tools and research for agents that take real actions.
+
 In the [ask-or-act benchmark](https://github.com/aryan597/ask-or-act), four models from a local 9B up to Claude Opus 5 each let **4 to 6 unrecoverable actions** through when trusted to decide alone, like sending a recruiter email unasked or paying a bill. This rule took that to **zero on every model**, for about 21 extra questions per 120 actions. kiri-gate is that rule as a library.
 
 ```python
