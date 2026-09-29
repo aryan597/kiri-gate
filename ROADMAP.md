@@ -9,15 +9,25 @@ Models are getting better at *spotting* risk (AUROC 0.95 to 0.996 from Qwen 9B t
 - Decision log, terminal approval, `Denied`
 
 ## v0.2: MCP proxy and double-charge protection (done)
-`kiri-gate mcp -- npx @some/mcp-server` sits between any MCP client (Claude Desktop, Cursor, Claude Code) and any MCP server. No code changes for anyone.
+`kiri-gate mcp -- npx @some/mcp-server` sits between an MCP client and a stdio MCP server, with no code changes on either side. Set up and documented for Claude Desktop; other stdio clients should work but haven't been tried.
 - Reads the server's tool list and classes each tool from `kiri.toml`. **Unknown tools default to IRREVERSIBLE**, so they always ask until you class them.
 - Suggests classes from tool annotations (`readOnlyHint`, `destructiveHint`, `openWorldHint`) but never auto-trusts them.
 - Asks through a local approval page, with a deadline set by the client's timeout.
 - Idempotency keys from the tool and its arguments, a ledger, `reconcile` and `NotExecuted`, in the library and the proxy.
 - Every decision goes into the log.
 
+## v0.2.1: fixes from an outside review (done)
+- Redaction of secrets in logs, the ledger, prompts and scorer input.
+- `scope=` so users sharing a ledger don't share keys.
+- Expired ledger rows and results are deleted.
+- A "What we know" table in the README: every claim, its evidence and its limits.
+
 ## Next
-- v0.2.1: ask through MCP elicitation where the client supports it.
+- Run kiri-gate itself against real Stripe test mode, not only the fake.
+- Measure how often models retry with *different* arguments, which dedupe can't catch (ask-or-act v2).
+- `sensitive` fields per tool in `kiri.toml`, for the MCP proxy.
+- Give scorers the tool's description, not just its name.
+- Ask through MCP elicitation where the client supports it.
 - A demo gif: an email send being caught in Claude Desktop.
 
 ## v0.3: learning your line

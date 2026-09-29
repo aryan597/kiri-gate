@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Kiri: AI agents you can trust with real actions</title>
-<meta name="description" content="Open-source tools and research for AI agents that touch the real world: asking before what can't be undone, and never doing it twice.">
+<meta name="description" content="Open-source tools and research for AI agents that touch the real world: asking before what can't be undone, and not repeating it blindly.">
 <meta property="og:title" content="Kiri: AI agents you can trust with real actions">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://aryan597.github.io/kiri-gate/">
@@ -103,8 +103,8 @@ footer{border-top:1px solid var(--rule);padding:30px 0 48px;display:flex;justify
   <div class="k red">What we measured</div>
   <h2>Real numbers, from real runs.</h2>
   <div class="stats">
-    <div class="stat"><div class="n"><s>4 to 6</s>0</div><p>unrecoverable actions per model when a simple class rule decides, across 4 models from a local 9B to Claude Opus 5.</p></div>
-    <div class="stat"><div class="n"><s>10/10</s>0/5</div><p>double charges on Stripe test mode when a response was lost. An idempotency key brought it to zero.</p></div>
+    <div class="stat"><div class="n">4 to 6</div><p>unrecoverable actions per model when left to decide alone, across 4 models from a local 9B to Claude Opus 5. Even the ones that spot risk best.</p></div>
+    <div class="stat"><div class="n"><s>5/5</s>0/5</div><p>double charges on Stripe test mode when a response was lost, with LangGraph's default retry policy. An idempotency key brought it to zero.</p></div>
     <div class="stat"><div class="n">2,624</div><p>published τ²-bench runs graded per tool, with no LLM judge. 789 of 789 failures explained.</p></div>
   </div>
 </section>
@@ -113,7 +113,7 @@ footer{border-top:1px solid var(--rule);padding:30px 0 48px;display:flex;justify
   <div class="k red">The work</div>
   <h2>Four things, all open source.</h2>
   <div class="work">
-    <a class="card" href="https://github.com/aryan597/kiri-gate"><div class="in"><span class="tag">Library</span><h3>kiri-gate</h3><p>A gate in front of your agent's tools. Asks before anything that can't be undone, never runs the same thing twice, works in front of any MCP server.</p></div></a>
+    <a class="card" href="https://github.com/aryan597/kiri-gate"><div class="in"><span class="tag">Library</span><h3>kiri-gate</h3><p>A gate in front of your agent's tools. Asks before anything that can't be undone, returns the saved result instead of re-running an identical call, and works in front of any stdio MCP server.</p></div></a>
     <a class="card" href="https://github.com/aryan597/ask-or-act"><div class="in"><span class="tag ink">Benchmark</span><h3>ask-or-act</h3><p>Do agents know when to ask a human? 120 labelled actions, 4 models, scored with Brier, ECE and AUROC, replicated on R-Judge.</p></div></a>
     <a class="card" href="https://github.com/aryan597/kiri-gate/tree/main/experiments/chaos"><div class="in"><span class="tag ink">Study</span><h3>The double-charge study</h3><p>LangChain and LangGraph agents repeating refunds and charges after a timeout. Data shared on the open LangChain and LangGraph issues.</p></div></a>
     <a class="card" href="https://github.com/aryan597/toolcard"><div class="in"><span class="tag ink">Report card</span><h3>toolcard</h3><p>Which tools agents get wrong, and how often. Per-tool grading of τ²-bench runs against ground truth.</p></div></a>
@@ -122,7 +122,7 @@ footer{border-top:1px solid var(--rule);padding:30px 0 48px;display:flex;justify
 
 <section id="gate">
   <div class="k red">kiri-gate v0.2</div>
-  <h2>Ask first. Never twice.</h2>
+  <h2>Ask first. Check before repeating.</h2>
   <div class="split">
     <div>
 <pre><span class="c"># pip install git+https://github.com/aryan597/kiri-gate</span>
@@ -137,7 +137,7 @@ def send_email(to, body): ...
 # the same call again after a
 # timeout is checked, not re-run.</span>
 send_email("r@company.com", "Hi")</pre>
-      <p style="color:var(--ink2);font-size:17px;margin-top:18px">Zero dependencies. Python 3.9+. Or put it in front of any MCP server with one command: <code style="font-family:var(--mono);font-size:15px">kiri-gate mcp -- &lt;server&gt;</code></p>
+      <p style="color:var(--ink2);font-size:17px;margin-top:18px">Zero dependencies. Python 3.9+. Or put it in front of any stdio MCP server with one command: <code style="font-family:var(--mono);font-size:15px">kiri-gate mcp -- &lt;server&gt;</code></p>
     </div>
     <div class="shot"><img src="approval.png" alt="kiri-gate approval page: a refund waiting for approval because an identical call timed out and may already have happened"></div>
   </div>

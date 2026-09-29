@@ -10,8 +10,13 @@ States:
   UNKNOWN  raised an error, so it may or may not have happened (a timeout after the write went through looks
            exactly like one before it). An identical call never runs blindly: it's reconciled or asked about.
 
-Entries expire after `window` seconds (default 24h, the same as Stripe's idempotency keys). A claim older than
-`stale` seconds (default 10 minutes) counts as UNKNOWN: the process running it probably died mid-call.
+Entries expire after `window` seconds (default 24h, the same as Stripe's idempotency keys), and expired rows
+and results are deleted, not just ignored. A claim older than `stale` seconds (default 10 minutes) counts as
+UNKNOWN: the process running it probably died mid-call, but it can't be known for sure, so it's never retried
+automatically.
+
+What's written to the ledger file goes through redact.py first: secret-looking arguments and result fields
+are stored as [REDACTED]. The key is a hash of the real arguments, so dedupe still works.
 """
 
 from __future__ import annotations
@@ -21,7 +26,9 @@ import json
 import sqlite3
 import threading
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, FrozenSet, Optional, Tuple
+
+from kiri_gate.redact import redact
 
 CLAIMED, DONE, UNKNOWN = "claimed", "done", "unknown"
 KEY_ARG = "idempotency_key"
@@ -41,7 +48,8 @@ class Ledger:
         # Autocommit, so claim() can take an IMMEDIATE lock: two processes sharing a file can't both claim.
         self._db = sqlite3.connect(path, check_same_thread=False, isolation_level=None, timeout=10)
         self._lock = threading.Lock()
-        self._results: Dict[str, Any] = {}  # live result objects, while this process still has them
+        self._results: Dict[str, Tuple[float, Any]] = {}  # key -> (time, live result), dropped when expired
+        self._writes = 0
         self._db.execute("""CREATE TABLE IF NOT EXISTS effects (
             key TEXT PRIMARY KEY, tool TEXT, args TEXT, state TEXT, result TEXT, error TEXT, ts REAL)""")
 
@@ -69,13 +77,13 @@ class Ledger:
             return None, None, ""
         state, error = st
         if key in self._results:
-            return state, self._results[key], error
+            return state, self._results[key][1], error
         try:
             return state, (json.loads(row[3]) if row[3] else None), error
         except ValueError:
             return state, row[3], error
 
-    def claim(self, key: str, tool: str, args: Dict[str, Any]) -> bool:
+    def claim(self, key: str, tool: str, args: Dict[str, Any], sensitive: FrozenSet[str] = frozenset()) -> bool:
         """Mark as running. False if an identical call is running or done. UNKNOWN can be claimed: that's
         the caller deciding to run it after reconciling or asking."""
         with self._lock:
@@ -88,7 +96,8 @@ class Ledger:
                     return False
                 self._db.execute(
                     "INSERT OR REPLACE INTO effects (key, tool, args, state, result, error, ts) VALUES (?,?,?,?,?,?,?)",
-                    (key, tool, json.dumps(args, default=str)[:4000], CLAIMED, None, None, time.time()))
+                    (key, tool, json.dumps(redact(args, sensitive), default=str)[:4000], CLAIMED, None, None,
+                     time.time()))
                 self._db.execute("COMMIT")
             except BaseException:
                 self._db.execute("ROLLBACK")
@@ -96,9 +105,9 @@ class Ledger:
             self._results.pop(key, None)
         return True
 
-    def done(self, key: str, result: Any) -> None:
-        self._results[key] = result
-        raw = json.dumps(result, default=str)
+    def done(self, key: str, result: Any, sensitive: FrozenSet[str] = frozenset()) -> None:
+        self._results[key] = (time.time(), result)
+        raw = json.dumps(redact(result, sensitive), default=str)
         self._set(key, DONE, result=raw if len(raw) <= MAX_RESULT else None)
 
     def unknown(self, key: str, error: str) -> None:
@@ -110,7 +119,18 @@ class Ledger:
             self._db.execute("DELETE FROM effects WHERE key=?", (key,))
             self._results.pop(key, None)
 
+    def prune(self) -> int:
+        """Delete everything past the window, from memory and from the file. Runs every 100 writes."""
+        cutoff = time.time() - self.window
+        with self._lock:
+            for k in [k for k, (ts, _) in self._results.items() if ts < cutoff]:
+                del self._results[k]
+            return self._db.execute("DELETE FROM effects WHERE ts < ?", (cutoff,)).rowcount
+
     def _set(self, key: str, state: str, result: Optional[str] = None, error: Optional[str] = None) -> None:
+        self._writes += 1
+        if self._writes % 100 == 0:
+            self.prune()
         with self._lock:
             self._db.execute("UPDATE effects SET state=?, result=COALESCE(?, result), error=COALESCE(?, error), ts=? "
                              "WHERE key=?", (state, result, error, time.time(), key))

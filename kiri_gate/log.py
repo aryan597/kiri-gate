@@ -1,11 +1,14 @@
-"""Every decision, in SQLite. This is the raw material for calibration and for learning your line."""
+"""Every decision, in SQLite. This is the raw material for calibration and for learning your line.
+Arguments go through redact.py before they're written: secret-looking fields are stored as [REDACTED]."""
 
 from __future__ import annotations
 
 import json
 import sqlite3
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, FrozenSet, List, Optional
+
+from kiri_gate.redact import redact
 
 
 class DecisionLog:
@@ -18,12 +21,13 @@ class DecisionLog:
         self._db.commit()
 
     def record(self, ts: float, tool: str, cls: str, goal: str, args: Dict[str, Any], decision: str, why: str,
-               confidence: Optional[float], approved: Optional[bool], edited: bool, note: str) -> None:
+               confidence: Optional[float], approved: Optional[bool], edited: bool, note: str,
+               sensitive: FrozenSet[str] = frozenset()) -> None:
         with self._lock:
             self._db.execute(
                 "INSERT INTO decisions (ts, tool, cls, goal, args, decision, why, confidence, approved, edited, note) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                (ts, tool, cls, goal, json.dumps(args, default=str)[:4000], decision, why, confidence,
+                (ts, tool, cls, goal, json.dumps(redact(args, sensitive), default=str)[:4000], decision, why, confidence,
                  None if approved is None else int(approved), int(edited), note))
             self._db.commit()
 

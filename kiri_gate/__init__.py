@@ -14,4 +14,4 @@ from kiri_gate.log import DecisionLog
 
 __all__ = ["Gate", "Class", "READ", "UNDOABLE", "IRREVERSIBLE", "EXTERNAL",
            "Request", "Answer", "Denied", "NotExecuted", "RegistryError", "DecisionLog", "Ledger", "make_key"]
-__version__ = "0.2.0"
+__version__ = "0.2.1"

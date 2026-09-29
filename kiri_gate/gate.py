@@ -8,11 +8,18 @@ Rules, in order:
                 With no scorer, it acts: undoable means you can take it back.
 
 A tool's class is fixed when it's registered and can't be registered twice.
-The agent never holds the real function; it only gets the gated wrapper.
+In library mode the agent gets the gated wrapper, but nothing stops your own code from calling the original
+function directly: keep tools reachable only through the gate. The MCP proxy (mcp.py) is the stronger boundary,
+because the client only ever sees the proxy.
 
 Doing things twice: IRREVERSIBLE and EXTERNAL calls are deduped by default (see ledger.py). An identical
 call that already succeeded returns the saved result and doesn't run. One that failed may have happened
-anyway, so it's reconciled (if the tool has a reconcile function) or asked about. It never runs blindly.
+anyway, so it's reconciled (if the tool has a reconcile function) or asked about. It is never retried
+automatically. Dedupe only recognises an identical call: same tool, same arguments, same scope and goal.
+A retry with different arguments (64 vs 64.5, a reworded note) is a new call.
+
+Secrets: whatever the gate shows a human, logs, stores or hands to a scorer goes through redact.py first.
+The tool itself gets the real arguments.
 """
 
 from __future__ import annotations
@@ -23,13 +30,15 @@ import inspect
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Iterable, Optional
 
 from kiri_gate.classes import Class, always_asks
 from kiri_gate.ledger import CLAIMED, DONE, KEY_ARG, UNKNOWN, Ledger, make_key
+from kiri_gate.redact import redact, restore
 from kiri_gate.log import DecisionLog
 
 _goal: contextvars.ContextVar[str] = contextvars.ContextVar("kiri_goal", default="")
+_scope: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("kiri_scope", default=None)
 
 
 class Denied(Exception):
@@ -72,6 +81,7 @@ class _Tool:
     dedupe: bool = False
     reconcile: Optional[Callable[..., Any]] = None
     takes_key: bool = False        # fn has an idempotency_key parameter
+    sensitive: frozenset = frozenset()  # extra argument names to redact, on top of the defaults
 
 
 def _takes_key(fn: Callable) -> bool:
@@ -88,6 +98,7 @@ class Gate:
     threshold: float = 0.5
     log: Optional[DecisionLog] = None
     ledger: Optional[Ledger] = None
+    scope: str = ""  # who this gate acts for, e.g. "tenant-4/user-123". Part of every dedupe key.
     _tools: Dict[str, _Tool] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -103,8 +114,12 @@ class Gate:
     # ---- registration --------------------------------------------------------
 
     def tool(self, cls: Class, name: Optional[str] = None, description: str = "",
-             dedupe: Optional[bool] = None, reconcile: Optional[Callable[..., Any]] = None):
+             dedupe: Optional[bool] = None, reconcile: Optional[Callable[..., Any]] = None,
+             sensitive: Iterable[str] = ()):
         """Decorator: @gate.tool(EXTERNAL) def send_email(...).
+
+        sensitive: argument names to hide from logs, the ledger and the approval page, on top of the
+                   built-in list (password, token, api_key, card_number, ...).
 
         dedupe: default on for IRREVERSIBLE and EXTERNAL. Pass True to opt another class in.
         reconcile: called with the same arguments when an identical earlier call failed. Return the result
@@ -120,7 +135,7 @@ class Gate:
                     raise RegistryError(f"tool '{tname}' is already registered as {self._tools[tname].cls.name}")
                 self._tools[tname] = _Tool(tname, cls, fn, description or (inspect.getdoc(fn) or "").split("\n")[0],
                                            always_asks(cls) if dedupe is None else bool(dedupe), reconcile,
-                                           _takes_key(fn))
+                                           _takes_key(fn), frozenset(sensitive))
 
             @functools.wraps(fn)
             def gated(*args, **kwargs):
@@ -132,25 +147,31 @@ class Gate:
         return wrap
 
     def register(self, fn: Callable, cls: Class, name: Optional[str] = None, description: str = "",
-                 dedupe: Optional[bool] = None, reconcile: Optional[Callable[..., Any]] = None) -> Callable:
-        return self.tool(cls, name, description, dedupe, reconcile)(fn)
+                 dedupe: Optional[bool] = None, reconcile: Optional[Callable[..., Any]] = None,
+                 sensitive: Iterable[str] = ()) -> Callable:
+        return self.tool(cls, name, description, dedupe, reconcile, sensitive)(fn)
 
     def classes(self) -> Dict[str, Class]:
         return {n: t.cls for n, t in self._tools.items()}
 
     # ---- goal ----------------------------------------------------------------
 
-    def goal(self, text: str):
-        """with gate.goal("Clean up build artifacts"): ... gives the scorer and the human the context."""
+    def goal(self, text: str, scope: Optional[str] = None):
+        """with gate.goal("Clean up build artifacts"): ... gives the scorer and the human the context.
+        scope: who this is for (a user or session id). Overrides Gate(scope=...) inside the block, so two
+        users sending the same email never share a dedupe key."""
         gate = self
 
         class _Ctx:
             def __enter__(self_inner):
                 self_inner.token = _goal.set(text)
+                self_inner.stoken = _scope.set(scope) if scope is not None else None
                 return gate
 
             def __exit__(self_inner, *exc):
                 _goal.reset(self_inner.token)
+                if self_inner.stoken is not None:
+                    _scope.reset(self_inner.stoken)
                 return False
 
         return _Ctx()
@@ -176,7 +197,7 @@ class Gate:
 
         key = ""
         if tool.dedupe:
-            key = make_key(tool.name, call_args, scope=goal)
+            key = make_key(tool.name, call_args, scope=self._key_scope(goal))
             state, saved, err = self.ledger.get(key)
             if state == DONE:
                 self._record(tool, goal, call_args, "deduped", "an identical call already succeeded", None, None)
@@ -186,7 +207,7 @@ class Gate:
             if state == UNKNOWN:
                 found = self._reconcile(tool, call_args, key)
                 if found is not None and found is not _CANT_TELL:
-                    self.ledger.done(key, found)
+                    self.ledger.done(key, found, tool.sensitive)
                     self._record(tool, goal, call_args, "deduped", "reconciled: an identical call already happened",
                                  None, None)
                     return found
@@ -201,18 +222,18 @@ class Gate:
 
         answer: Optional[Answer] = None
         if decision == "ask":
-            answer = self.ask(Request(tool.name, tool.cls, dict(call_args), goal, why, conf))
+            answer = self.ask(Request(tool.name, tool.cls, redact(dict(call_args), tool.sensitive), goal, why, conf))
             if answer.approve and answer.args is not None:
-                call_args = answer.args
+                call_args = restore(answer.args, call_args)  # [REDACTED] left untouched means "keep the real value"
                 if tool.dedupe:
-                    key = make_key(tool.name, call_args, scope=goal)
+                    key = make_key(tool.name, call_args, scope=self._key_scope(goal))
         self._record(tool, goal, call_args, decision, why, conf, answer)
         if answer is not None and not answer.approve:
             raise Denied(f"{tool.name}: the user said no" + (f" ({answer.note})" if answer.note else ""))
 
         if not tool.dedupe:
             return tool.fn(**call_args)
-        if not self.ledger.claim(key, tool.name, call_args):
+        if not self.ledger.claim(key, tool.name, call_args, tool.sensitive):
             state, saved, _ = self.ledger.get(key)
             if state == DONE:  # e.g. the human edited the args into a call that had already succeeded
                 return saved
@@ -225,8 +246,13 @@ class Gate:
         except BaseException as e:
             self.ledger.unknown(key, repr(e))
             raise
-        self.ledger.done(key, result)
+        self.ledger.done(key, result, tool.sensitive)
         return result
+
+    def _key_scope(self, goal: str) -> str:
+        who = _scope.get()
+        who = self.scope if who is None else who
+        return f"{who}\x1f{goal}" if who else goal  # no scope set: same keys as v0.2.0
 
     def _with_key(self, tool: _Tool, args: Dict[str, Any], key: str) -> Dict[str, Any]:
         if tool.takes_key and args.get(KEY_ARG) is None:
@@ -251,7 +277,7 @@ class Gate:
         if self.scorer is None:
             return "act", "undoable, no scorer set", None
         try:
-            p = float(self.scorer(goal, tool.name, args))
+            p = float(self.scorer(goal, tool.name, redact(args, tool.sensitive)))  # scorers may call an LLM
         except Exception as e:  # a broken scorer must never mean "act"
             return "ask", f"scorer failed ({type(e).__name__}), asking to be safe", None
         if p >= self.threshold:
@@ -264,7 +290,8 @@ class Gate:
         self.log.record(ts=time.time(), tool=tool.name, cls=tool.cls.name, goal=goal, args=args,
                         decision=decision, why=why, confidence=conf,
                         approved=None if answer is None else answer.approve,
-                        edited=bool(answer and answer.args is not None), note=answer.note if answer else "")
+                        edited=bool(answer and answer.args is not None), note=answer.note if answer else "",
+                        sensitive=tool.sensitive)
 
 
 class _CantTell:

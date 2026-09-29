@@ -32,7 +32,7 @@ The same happens with LangChain's `ToolRetryMiddleware` (10 of 10 runs, see [lan
 
 ## Stops double charges
 
-IRREVERSIBLE and EXTERNAL tools get a key made from the tool, its arguments and the goal. A framework retry or a model re-planning with the same arguments gets the same key, so the call can't happen twice:
+IRREVERSIBLE and EXTERNAL tools get a key made from the tool, its arguments and the goal. A framework retry or a model re-planning with the same arguments gets the same key, so an identical retry isn't sent again:
 
 ```python
 from kiri_gate import Gate, EXTERNAL, NotExecuted
@@ -62,9 +62,23 @@ def charge(order_id: str, amount: int, idempotency_key: str = None):
 - **Still running:** an identical call is refused.
 - **`NotExecuted`:** raise it when you know nothing happened, and a retry runs normally.
 - **Key injection:** if the tool has an `idempotency_key` parameter, kiri-gate fills it in, so you can pass it on to Stripe.
-- Keys last 24 hours, like Stripe's. `Gate(ledger=Ledger("kiri.db"))` keeps them across restarts. `@gate.tool(UNDOABLE, dedupe=True)` opts other tools in.
+- Keys last 24 hours, like Stripe's, then they're deleted. `Gate(ledger=Ledger("kiri.db"))` keeps them across restarts (the default is in memory). `@gate.tool(UNDOABLE, dedupe=True)` opts other tools in.
+- **Scope:** `Gate(scope="user-123")`, or `with gate.goal("...", scope="user-123"):`, puts the user in the key. Without it, two users sending the identical email through one shared ledger would look like one call.
 
-In the Stripe repro above, wrapping the charge in kiri-gate gave **1 charge** under LangGraph's default retry policy ([experiments/chaos](experiments/chaos), `kiri_gate` condition, offline fake Stripe). The MCP proxy does the same for every non-READ tool.
+What this is not: exactly-once delivery. It catches an **identical** call (same tool, arguments, scope and goal). A model that retries with different arguments, even `64` vs `64.5`, makes a new call, and kiri-gate treats it as new. A call still marked as running after 10 minutes counts as unknown: it's asked about, never retried automatically.
+
+In the Stripe repro above, wrapping the charge in kiri-gate gave **1 charge** under LangGraph's default retry policy ([experiments/chaos](experiments/chaos), `kiri_gate` condition, offline fake Stripe). The real-Stripe 0 of 5 came from a plain idempotency key; kiri-gate itself hasn't been run against real Stripe yet. The MCP proxy does the same for every non-READ tool.
+
+## Secrets stay out of the logs
+
+Everything kiri-gate writes down or shows goes through a redaction step first: the decision log, the ledger file, the terminal prompt, the approval page, and the arguments a scorer sees (a scorer may be an LLM API). The tool itself still gets the real values.
+
+- Argument names that look secret are replaced with `[REDACTED]` at any depth: password, token, api_key, secret, authorization, cookie, card_number, cvv and similar.
+- Strings in known key formats are replaced wherever they appear: `sk_live_`, `ghp_`, `AKIA...`, `Bearer ...`, JWTs.
+- Add your own: `@gate.tool(EXTERNAL, sensitive={"note"})`.
+- If a human edits the arguments and leaves `[REDACTED]` in place, the real value is kept.
+
+Limit: it's a name and pattern check. A secret pasted into a free-text field like `body` won't be caught unless you mark that field.
 
 ## Install
 
@@ -163,8 +177,24 @@ The scorer uses the same prompt as ask-or-act, so the benchmark tells you what t
 
 `ask` is any function that takes a `Request` (tool, class, args, goal, why) and returns an `Answer(approve, args=None, note="")`. You can plug in Slack, a web page, a phone notification or a test stub.
 
+## What we know
+
+Every claim above, with how sure we are. Measured means we ran it and counted. By construction means the code can't do otherwise, and tests check it. Untested means we don't know yet.
+
+| Claim | Evidence | Status | Limits |
+|---|---|---|---|
+| Default retries repeat a write whose response was lost | LangChain `ToolRetryMiddleware` 10/10; LangGraph `RetryPolicy()` on real Stripe test mode 5/5 ([chaos study](experiments/chaos)) | Measured | One local model (Qwen 3.5 9B), 10 and 5 runs, fake tools for LangChain |
+| A key built from the tool and its arguments stops it | Real Stripe 0/5, own agent loop 0/10 | Measured | Same small runs. This was the key alone, not kiri-gate |
+| kiri-gate stops the duplicate charge | `kiri_gate` condition: 1 charge | Measured, fake Stripe only | Not yet run against real Stripe |
+| IRREVERSIBLE and EXTERNAL always ask | Gate rules, 60+ tests | By construction | Only as good as the class you declare. In library mode, only if your code can't reach the raw function |
+| An identical call that succeeded isn't sent again | Ledger tests | By construction | Identical means same tool, arguments, scope and goal, within 24 hours |
+| A call that may have happened is never retried automatically | Ledger and gate tests | By construction | It's reconciled or asked about, so a human can still approve a duplicate |
+| How often models retry with *different* arguments | None yet | Untested | [ask-or-act v2](https://github.com/aryan597/ask-or-act) will measure it |
+| Secrets are kept out of logs, ledger, prompts and scorers | Redaction tests | Tested | Name and pattern based. Free-text fields need `sensitive=` |
+| The MCP proxy gates any stdio server | Tests against a fake stdio server | Tested | Tried on few real servers so far. One scope per proxy, so one user per proxy |
+
 ## Status
 
-v0.2: the core gate, double-charge protection, the MCP proxy and the approval page. No dependencies, Python 3.9+. See [ROADMAP.md](ROADMAP.md). Next: asking through MCP elicitation (v0.2.1).
+v0.2.1: the core gate, double-charge protection, the MCP proxy, the approval page, and redaction. No dependencies, Python 3.9+. See [ROADMAP.md](ROADMAP.md) and [CHANGELOG.md](CHANGELOG.md).
 
 MIT licensed.

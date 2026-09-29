@@ -1,3 +1,13 @@
+## v0.2.1: fixes from an outside review
+
+Someone reviewed the code and found real gaps. These are the fixes.
+
+- **Secrets redacted.** Arguments and results are redacted before they reach the decision log, the ledger file, the terminal prompt, the approval page or a scorer. Secret-looking names (password, token, api_key, card_number, ...) and known key formats (`sk_live_`, `ghp_`, `AKIA`, `Bearer`, JWTs) become `[REDACTED]`. Add your own with `@gate.tool(..., sensitive={"field"})`. The tool still gets the real values, and an edit that leaves `[REDACTED]` keeps the real value.
+- **Scope.** `Gate(scope="user-123")` or `gate.goal(text, scope=...)` puts the user in the dedupe key, so two users sending the identical email through one shared ledger are two calls. No scope set means the same keys as v0.2.0.
+- **Expiry.** Ledger rows and in-memory results older than the 24 hour window are now deleted (every 100 writes, or `Ledger.prune()`), not just ignored.
+- **Docs say what's measured.** The README has a "What we know" table: each claim, its evidence, whether it's measured, true by construction or untested, and its limits. "Can't happen twice" wording is gone: it catches identical calls, and never retries an uncertain one automatically.
+- 12 new tests (61 in total).
+
 ## v0.2.0: MCP proxy and double-charge protection
 
 ### Doing things twice
