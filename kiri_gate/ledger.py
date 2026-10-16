@@ -31,6 +31,7 @@ from typing import Any, Dict, FrozenSet, Optional, Tuple
 from kiri_gate.redact import redact
 
 CLAIMED, DONE, UNKNOWN = "claimed", "done", "unknown"
+ANY = object()  # claim(expect=ANY): don't check what the caller saw (v0.2.1 behaviour)
 KEY_ARG = "idempotency_key"
 MAX_RESULT = 1_000_000  # characters of JSON; a bigger result isn't kept (the DONE state still is)
 
@@ -83,15 +84,21 @@ class Ledger:
         except ValueError:
             return state, row[3], error
 
-    def claim(self, key: str, tool: str, args: Dict[str, Any], sensitive: FrozenSet[str] = frozenset()) -> bool:
-        """Mark as running. False if an identical call is running or done. UNKNOWN can be claimed: that's
-        the caller deciding to run it after reconciling or asking."""
+    def claim(self, key: str, tool: str, args: Dict[str, Any], sensitive: FrozenSet[str] = frozenset(),
+              expect: Any = ANY) -> bool:
+        """Mark as running. False if an identical call is running or done.
+
+        expect: the state the caller saw and decided on, None (absent) or UNKNOWN. The claim only succeeds if
+        the row is still in that state, so a caller that read "absent" can't take a row that went UNKNOWN while
+        it was scoring or waiting for a human (it has to go back and be reconciled or asked about). The default,
+        ANY, keeps the v0.2.1 behaviour of accepting absent or UNKNOWN, for callers outside the Gate."""
         with self._lock:
             self._db.execute("BEGIN IMMEDIATE")
             try:
                 row = self._db.execute("SELECT state, error, ts FROM effects WHERE key=?", (key,)).fetchone()
                 st = self._state(row)
-                if st is not None and st[0] != UNKNOWN:
+                now = None if st is None else st[0]
+                if now not in (None, UNKNOWN) or (expect is not ANY and now != expect):
                     self._db.execute("ROLLBACK")
                     return False
                 self._db.execute(

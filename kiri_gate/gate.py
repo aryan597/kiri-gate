@@ -186,7 +186,7 @@ class Gate:
         bound.apply_defaults()
         return self.run(name, dict(bound.arguments))
 
-    def run(self, name: str, args: Dict[str, Any], must_ask: str = "") -> Any:
+    def run(self, name: str, args: Dict[str, Any], must_ask: str = "", _again: bool = False) -> Any:
         """Like call, but with the arguments already as a dict (e.g. from an MCP tools/call).
         must_ask: ask the human whatever the class, with this as the reason."""
         tool = self._tools.get(name)
@@ -196,9 +196,11 @@ class Gate:
         goal = _goal.get()
 
         key = ""
+        seen: Optional[str] = None  # the ledger state this call was routed on; the claim must still match it
         if tool.dedupe:
             key = make_key(tool.name, call_args, scope=self._key_scope(goal))
             state, saved, err = self.ledger.get(key)
+            seen = state
             if state == DONE:
                 self._record(tool, goal, call_args, "deduped", "an identical call already succeeded", None, None)
                 return saved
@@ -226,17 +228,26 @@ class Gate:
             if answer.approve and answer.args is not None:
                 call_args = restore(answer.args, call_args)  # [REDACTED] left untouched means "keep the real value"
                 if tool.dedupe:
-                    key = make_key(tool.name, call_args, scope=self._key_scope(goal))
+                    new_key = make_key(tool.name, call_args, scope=self._key_scope(goal))
+                    if new_key != key:  # edited into a different call, whose ledger row nobody checked
+                        key, seen = new_key, None
         self._record(tool, goal, call_args, decision, why, conf, answer)
         if answer is not None and not answer.approve:
             raise Denied(f"{tool.name}: the user said no" + (f" ({answer.note})" if answer.note else ""))
 
         if not tool.dedupe:
             return tool.fn(**call_args)
-        if not self.ledger.claim(key, tool.name, call_args, tool.sensitive):
+        if not self.ledger.claim(key, tool.name, call_args, tool.sensitive, expect=seen):
             state, saved, _ = self.ledger.get(key)
             if state == DONE:  # e.g. the human edited the args into a call that had already succeeded
                 return saved
+            if state == UNKNOWN:
+                # An identical call failed after this one was routed (or the edited call had failed before).
+                # It may already have happened, so go back through reconcile/ask rather than run it blindly.
+                if not _again and key == make_key(tool.name, dict(args), scope=self._key_scope(goal)):
+                    return self.run(name, args, must_ask, _again=True)
+                raise Denied(f"{tool.name}: an identical call failed and may already have happened; "
+                             f"try again to be asked about it")
             raise Denied(f"{tool.name}: identical call already running")
         try:
             result = tool.fn(**self._with_key(tool, call_args, key))

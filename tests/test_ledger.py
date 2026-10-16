@@ -241,6 +241,16 @@ class LedgerFile(unittest.TestCase):
         l.done("k", {"a": 1})
         self.assertEqual(l.get("k")[:2], (DONE, {"a": 1}))
 
+    def test_claim_expect_must_match(self):
+        l = Ledger()
+        self.assertTrue(l.claim("k", "t", {}, expect=None))
+        l.unknown("k", "timeout")
+        self.assertFalse(l.claim("k", "t", {}, expect=None))   # read "absent", row is now UNKNOWN
+        self.assertTrue(l.claim("k", "t", {}, expect=UNKNOWN))  # saw UNKNOWN and was asked: fine
+        l.done("k", 1)
+        self.assertFalse(l.claim("k", "t", {}, expect=DONE))    # DONE is never claimable
+        self.assertTrue(Ledger().claim("k", "t", {}))           # default: v0.2.1 behaviour
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,3 +1,9 @@
+## Unreleased
+
+- **Fixed: a stale read could re-run an UNKNOWN call** ([#1](https://github.com/aryan597/kiri-gate/issues/1), reported by [@xianmgb-cmyk](https://github.com/xianmgb-cmyk) with a minimal repro). Two identical dedupe calls at once: B reads "absent" and is being scored, A runs, loses its response and is marked UNKNOWN, then B claimed the UNKNOWN row and ran again without asking. `Ledger.claim` now takes `expect`, the state the caller was routed on, and refuses if the row has changed since. The Gate then goes back through reconcile/ask. The MCP proxy had the same check-then-claim gap and gets the same fix.
+- Limits: tested with the in-memory ledger and simulated effects (the C01 schedule). The proxy fix is covered by the ledger unit test, not a concurrent proxy test. `claim()` without `expect` keeps the v0.2.1 behaviour for code calling the ledger directly.
+- 2 new tests (63 in total). The C01 test fails on v0.2.1 (2 effects, 0 prompts) and passes now (1 effect, 1 prompt).
+
 ## v0.2.1: fixes from an outside review
 
 Someone reviewed the code and found real gaps. These are the fixes.

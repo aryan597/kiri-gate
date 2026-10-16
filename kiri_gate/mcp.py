@@ -146,8 +146,11 @@ class Proxy:
         cur.msg, cur.deadline, cur.key, cur.timed_out = msg, received + self.ask_timeout, uuid.uuid4().hex, False
         self._inflight[mid] = cur.key
         must_ask = ""
+        cur.checked, cur.seen = None, None  # the key and ledger state this call is routed on
         if self.gate.classes()[name] is not Class.READ:
-            state, saved, err = self.ledger.get(make_key(name, args, scope=self.name))
+            cur.checked = make_key(name, args, scope=self.name)
+            state, saved, err = self.ledger.get(cur.checked)
+            cur.seen = state
             if state == DONE:
                 return self._replay(mid, name, args, saved)
             if state == CLAIMED:
@@ -207,7 +210,13 @@ class Proxy:
                 msg["params"] = dict(msg.get("params") or {}, arguments=args)
                 if cls is not Class.READ:  # args are final here, after any edit by the human
                     key = make_key(name, args, scope=self.name)
-                    if not self.ledger.claim(key, name, args):
+                    # Only claim the row in the state this call was routed (and maybe approved) on. If an
+                    # identical call went UNKNOWN meanwhile, it may have happened: refuse, and the retry is asked.
+                    seen = self._current.seen if key == self._current.checked else None
+                    if not self.ledger.claim(key, name, args, expect=seen):
+                        if self.ledger.get(key)[0] == UNKNOWN:
+                            raise Denied(f"an identical {name} call failed and may already have happened; "
+                                         f"try again to be asked about it")
                         raise Denied(f"an identical {name} call already ran or is running")
                     self._effects[msg["id"]] = key
                 self._to_server(msg)

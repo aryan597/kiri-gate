@@ -99,6 +99,56 @@ class GateRules(unittest.TestCase):
         self.assertEqual(g.log.labelled(), [(0.3, 1)])
 
 
+class ConcurrentUnknown(unittest.TestCase):
+    """Issue #1 (C01, reported by xianmgb-cmyk): a call that read "absent" must not claim a row that went
+    UNKNOWN while it was being scored. It has to go back and be asked."""
+
+    def test_stale_read_cannot_claim_unknown(self):
+        import threading
+        from kiri_gate import make_key
+        from kiri_gate.ledger import UNKNOWN
+        paused, resume = threading.Event(), threading.Event()
+        effects, questions, errors = [], [], []
+
+        def scorer(*_):
+            if threading.current_thread().name == "B":
+                paused.set()
+                if not resume.wait(5):
+                    raise RuntimeError("scheduler timeout")
+            return 1.0
+
+        gate = Gate(scorer=scorer, ask=lambda r: questions.append(r) or Answer(False))
+
+        @gate.tool(UNDOABLE, dedupe=True)
+        def write(x):
+            effects.append(x)
+            if len(effects) == 1:
+                raise TimeoutError("effect happened; response lost")
+            return "ok"
+
+        def call_b():
+            try:
+                write(1)
+            except BaseException as e:
+                errors.append(e)
+
+        t = threading.Thread(target=call_b, name="B")
+        t.start()
+        self.assertTrue(paused.wait(5))
+        try:
+            with self.assertRaises(TimeoutError):
+                write(1)
+            self.assertEqual(gate.ledger.get(make_key("write", {"x": 1}))[0], UNKNOWN)
+        finally:
+            resume.set()
+        t.join(5)
+        self.assertFalse(t.is_alive())
+        self.assertEqual(len(effects), 1)      # v0.2.1: 2
+        self.assertEqual(len(questions), 1)    # v0.2.1: 0
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], Denied)  # the human said no, so B didn't run
+
+
 class Parse(unittest.TestCase):
     def test_parse(self):
         self.assertEqual(parse_ok('{"ok": 1}'), 0.01)
