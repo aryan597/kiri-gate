@@ -108,6 +108,7 @@ class ConcurrentUnknown(unittest.TestCase):
         from kiri_gate import make_key
         from kiri_gate.ledger import UNKNOWN
         paused, resume = threading.Event(), threading.Event()
+        scorer_completed = threading.Event()
         effects, questions, errors = [], [], []
 
         def scorer(*_):
@@ -115,6 +116,7 @@ class ConcurrentUnknown(unittest.TestCase):
                 paused.set()
                 if not resume.wait(5):
                     raise RuntimeError("scheduler timeout")
+                scorer_completed.set()
             return 1.0
 
         gate = Gate(scorer=scorer, ask=lambda r: questions.append(r) or Answer(False))
@@ -143,8 +145,10 @@ class ConcurrentUnknown(unittest.TestCase):
             resume.set()
         t.join(5)
         self.assertFalse(t.is_alive())
+        self.assertTrue(scorer_completed.is_set())  # B must not have timed out in the scorer
         self.assertEqual(len(effects), 1)      # v0.2.1: 2
         self.assertEqual(len(questions), 1)    # v0.2.1: 0
+        self.assertIn("an identical call failed", questions[0].why)
         self.assertEqual(len(errors), 1)
         self.assertIsInstance(errors[0], Denied)  # the human said no, so B didn't run
 
