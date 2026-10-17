@@ -1,8 +1,17 @@
-## Unreleased
+## v0.2.2: a first run that doesn't fight you
+
+From a real install on Linux and a live demo: on a fresh install every tool asked, reads included, and the only way out was editing kiri.toml and restarting the client.
 
 - **Fixed: a stale read could re-run an UNKNOWN call** ([#1](https://github.com/aryan597/kiri-gate/issues/1), reported by [@xianmgb-cmyk](https://github.com/xianmgb-cmyk) with a minimal repro). Two identical dedupe calls at once: B reads "absent" and is being scored, A runs, loses its response and is marked UNKNOWN, then B claimed the UNKNOWN row and ran again without asking. `Ledger.claim` now takes `expect`, the state the caller was routed on, and refuses if the row has changed since. The Gate then goes back through reconcile/ask. The MCP proxy had the same check-then-claim gap and gets the same fix.
 - Limits: tested with the in-memory ledger and simulated effects (the C01 schedule). The proxy fix is covered by the ledger unit test, not a concurrent proxy test. `claim()` without `expect` keeps the v0.2.1 behaviour for code calling the ledger directly.
-- 2 new tests (63 in total). The C01 test fails on v0.2.1 (2 effects, 0 prompts) and passes now (1 effect, 1 prompt).
+- 2 new tests for #1. The C01 test fails on v0.2.1 (2 effects, 0 prompts) and passes now (1 effect, 1 prompt).
+- **Confirm classes on the approval page.** A tool not yet in `[tools]` shows what the server suggests ("read, from readOnlyHint") and a "remember" box. Tick it and Allow, and the class is saved to kiri.toml and used from the next call. Off by default, only on Allow, and only for tools not already confirmed, so a tired click can't downgrade anything.
+- **kiri.toml is re-read when it changes.** No client restart after editing it by hand.
+- **Clear reasons.** An unconfirmed tool says so ("isn't confirmed in kiri.toml yet") instead of "irreversible actions always ask", and its card is marked NOT CONFIRMED. First run prints where kiri.toml is and how to confirm tools.
+- **64 and 64.0 are the same call.** Whole-number floats hash like ints in dedupe keys. "64" (a string) and 64.5 are still different.
+- **Log page fixes.** A caught duplicate showed as "denied"; it now says "duplicate, not sent again", with a "Duplicates stopped" count. Rows keep the class the tool had when you decided.
+- The dedupe log row is written before the reply, so anything reading the log right after sees it.
+- 22 new tests (85 in total).
 
 ## v0.2.1: fixes from an outside review
 

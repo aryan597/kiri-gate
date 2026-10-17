@@ -27,7 +27,7 @@ import uuid
 from typing import Any, BinaryIO, Callable, Dict, List, Optional
 
 from kiri_gate import config as kconfig
-from kiri_gate.classes import Class
+from kiri_gate.classes import Class, parse
 from kiri_gate.gate import Answer, Denied, Gate, Request
 from kiri_gate.inbox import TIMED_OUT, Approver
 from kiri_gate.ledger import CLAIMED, DONE, UNKNOWN, Ledger, make_key
@@ -48,6 +48,7 @@ class Proxy:
         self.name = name or (os.path.basename(self.cmd[-1]) if self.cmd else "")
         self.config_path = config_path
         self.config = kconfig.load(config_path)
+        self._cfg_mtime = self._mtime()
         self.ask_timeout = ask_timeout
         self._ask_fn = ask
         self.approver = None if ask else (approver or Approver(notify=_note))
@@ -141,6 +142,7 @@ class Proxy:
         if not isinstance(name, str) or not isinstance(args, dict):
             return self._to_client({"jsonrpc": "2.0", "id": mid,
                                     "error": {"code": -32602, "message": "tools/call needs a name and object arguments"}})
+        self._reload_config()
         self._register(name)
         cur = self._current
         cur.msg, cur.deadline, cur.key, cur.timed_out = msg, received + self.ask_timeout, uuid.uuid4().hex, False
@@ -159,6 +161,9 @@ class Proxy:
             if state == UNKNOWN:
                 must_ask = (f"an identical call failed with {err or 'an error'} and may already have happened. "
                             f"Check before approving.")
+        if not must_ask and name not in self.config.tools:
+            must_ask = (f"{name} isn't confirmed in kiri.toml yet, so it asks every time. "
+                        f"Tick \"remember\" below to set its class for good.")
         try:
             self.gate.run(name, args, must_ask=must_ask)  # on act, the forwarder sends it; the reply flows back
         except Denied as e:
@@ -181,19 +186,72 @@ class Proxy:
         result = dict(saved) if isinstance(saved, dict) else {"content": []}
         result["content"] = list(result.get("content") or []) + [note]
         self._inflight.pop(mid, None)
-        self._to_client({"jsonrpc": "2.0", "id": mid, "result": result})
-        if self.gate.log is not None:
+        if self.gate.log is not None:  # log first, so anything reading the log after the reply sees it
             self.gate.log.record(ts=time.time(), tool=name, cls=self.gate.classes()[name].name, goal="", args=args,
                                  decision="deduped", why="an identical call already succeeded", confidence=None,
                                  approved=None, edited=False, note="")
+        self._to_client({"jsonrpc": "2.0", "id": mid, "result": result})
 
     def _ask(self, req: Request) -> Answer:
         if self._ask_fn is not None:
-            return self._ask_fn(req)
-        cur = self._current
-        a = self.approver.ask(req, key=cur.key, deadline=cur.deadline, source=self.name)
-        cur.timed_out = not a.approve and a.note == TIMED_OUT
+            a = self._ask_fn(req)
+        else:
+            cur = self._current
+            a = self.approver.ask(req, key=cur.key, deadline=cur.deadline, source=self.name,
+                                  extra=self._card_extra(req.tool))
+            cur.timed_out = not a.approve and a.note == TIMED_OUT
+        if a.approve and a.remember and req.tool not in self.config.tools:
+            self._confirm(req.tool, a.remember)
         return a
+
+    def _card_extra(self, name: str) -> Dict[str, Any]:
+        """For a tool not in [tools]: what the server's annotations suggest, so the human can confirm it."""
+        if name in self.config.tools:
+            return {}
+        cls, why = kconfig.suggest(self._seen.get(name) or {})
+        if name not in self._seen:
+            why = "the server didn't list this tool"
+        return {"confirmable": True, "suggested": cls, "suggested_why": why}
+
+    def _confirm(self, name: str, cls_name: str) -> None:
+        """The human ticked "remember" on the approval page: save the class and use it from the next call."""
+        try:
+            cls = parse(cls_name)
+            with self._reg_lock:
+                kconfig.confirm(self.config_path, name, cls)
+                self.config.tools[name] = cls
+                self.config.unconfirmed.pop(name, None)
+                self._cfg_mtime = self._mtime()
+                if name in self.gate.classes():
+                    self.gate.reclassify(name, cls)
+            _note(f"{name} is now {cls.value}, saved to {os.path.abspath(self.config_path)}")
+        except (OSError, ValueError) as e:
+            _note(f"couldn't save {name} as {cls_name} ({e}); it will keep asking")
+
+    def _mtime(self) -> float:
+        try:
+            return os.path.getmtime(self.config_path)
+        except OSError:
+            return 0.0
+
+    def _reload_config(self) -> None:
+        """Pick up hand edits to kiri.toml without restarting the client."""
+        m = self._mtime()
+        if m == self._cfg_mtime:
+            return
+        try:
+            cfg = kconfig.load(self.config_path)
+        except (OSError, ValueError) as e:
+            _note(f"kiri.toml changed but can't be read ({e}); keeping the previous classes")
+            self._cfg_mtime = m
+            return
+        with self._reg_lock:
+            self.config, self._cfg_mtime = cfg, m
+            for name, old in self.gate.classes().items():
+                new = cfg.class_for(name)
+                if new is not old:
+                    self.gate.reclassify(name, new)
+                    _note(f"{name}: {old.value} -> {new.value} (kiri.toml changed)")
 
     def _where(self) -> str:
         return self.approver.url if self.approver is not None else "the approval page"
@@ -208,7 +266,7 @@ class Proxy:
             def forward(**args):
                 msg = dict(self._current.msg)
                 msg["params"] = dict(msg.get("params") or {}, arguments=args)
-                if cls is not Class.READ:  # args are final here, after any edit by the human
+                if self.gate.classes()[name] is not Class.READ:  # live: the class can be confirmed later  # args are final here, after any edit by the human
                     key = make_key(name, args, scope=self.name)
                     # Only claim the row in the state this call was routed (and maybe approved) on. If an
                     # identical call went UNKNOWN meanwhile, it may have happened: refuse, and the retry is asked.
@@ -268,8 +326,11 @@ class Proxy:
             try:
                 with open(self.config_path, "w", encoding="utf-8", newline="\n") as f:
                     f.write(kconfig.draft(list(self._seen.values()), self.config.tools))
+                if not self._drafted:
+                    _note(f"first run: wrote {os.path.abspath(self.config_path)} with {len(self._seen)} tools. "
+                          f"Until you confirm a tool's class, it asks every time, even reads. Confirm each one "
+                          f"by ticking \"remember\" on {self._where()}, or move its line to [tools].")
                 self._drafted = True
-                _note(f"wrote {self.config_path}: {len(self._seen)} tools, all unconfirmed until you move them to [tools]")
             except OSError as e:
                 _note(f"couldn't write {self.config_path} ({e}); every tool will ask")
             return

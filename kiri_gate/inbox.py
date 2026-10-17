@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional
 from kiri_gate.gate import Answer, Request
 from kiri_gate.log import DecisionLog
 
+CLASS_NAMES = {"read", "undoable", "irreversible", "external"}
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 TIMED_OUT = "timed out"
 
@@ -94,12 +95,15 @@ class Inbox:
                 p.answer = {"approve": False, "args": None, "note": TIMED_OUT}
         return p.answer
 
-    def decide(self, key: str, approve: bool, args: Optional[Dict[str, Any]] = None, note: str = "") -> bool:
+    def decide(self, key: str, approve: bool, args: Optional[Dict[str, Any]] = None, note: str = "",
+               remember: Optional[str] = None) -> bool:
         with self._lock:
             p = self._pending.pop(key, None)
             if p is None:
                 return False
-            p.answer = {"approve": bool(approve), "args": args, "note": note}
+            if not (approve and p.item.get("confirmable")):
+                remember = None  # only an allowed call on a tool that isn't in [tools] yet can be remembered
+            p.answer = {"approve": bool(approve), "args": args, "note": note, "remember": remember}
             p.done.set()
         return True
 
@@ -194,7 +198,11 @@ def _handler(inbox: Inbox):
                 args = body.get("args")
                 if args is not None and not isinstance(args, dict):
                     return self._json(400, {"error": "edited args must be a JSON object"})
-                ok = inbox.decide(str(body.get("id", "")), body.get("approve") is True, args, str(body.get("note", ""))[:2000])
+                remember = body.get("remember")
+                if remember is not None and remember not in CLASS_NAMES:
+                    return self._json(400, {"error": "remember must be one of " + ", ".join(sorted(CLASS_NAMES))})
+                ok = inbox.decide(str(body.get("id", "")), body.get("approve") is True, args,
+                                  str(body.get("note", ""))[:2000], remember)
                 self._json(200 if ok else 409, {"ok": ok} if ok else {"error": "already decided or timed out"})
             elif path == "/api/ask":   # from another proxy; blocks until decided
                 if not isinstance(body.get("id"), str) or not isinstance(body.get("deadline"), (int, float)):
@@ -241,10 +249,12 @@ class Approver:
             pass
         return "blocked"
 
-    def ask(self, req: Request, key: str, deadline: float, source: str = "") -> Answer:
+    def ask(self, req: Request, key: str, deadline: float, source: str = "",
+            extra: Optional[Dict[str, Any]] = None) -> Answer:
+        """extra: more for the card, e.g. {"confirmable": True, "suggested": "read", "suggested_why": "readOnlyHint"}."""
         item = {"id": key, "tool": req.tool, "cls": req.cls.value, "args": req.args, "goal": req.goal,
                 "why": req.why, "confidence": req.confidence, "source": source,
-                "created": time.time(), "deadline": deadline}
+                "created": time.time(), "deadline": deadline, **(extra or {})}
         mode = self.ensure()
         if mode == "host":
             a = self.inbox.ask(item)
@@ -256,7 +266,9 @@ class Approver:
         else:
             a = {"approve": False, "note": f"port {self.port} is used by something else, so there's nowhere to ask"}
         args = a.get("args")
-        return Answer(a.get("approve") is True, args if isinstance(args, dict) else None, str(a.get("note") or ""))
+        remember = a.get("remember") if a.get("remember") in CLASS_NAMES else None
+        return Answer(a.get("approve") is True, args if isinstance(args, dict) else None, str(a.get("note") or ""),
+                      remember)
 
     def cancel(self, key: str) -> None:
         if self.inbox is not None:

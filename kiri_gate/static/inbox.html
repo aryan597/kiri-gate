@@ -31,10 +31,14 @@ input.note::placeholder{color:#8A8475}
 .edited{font-family:var(--mono);font-size:11px;color:var(--red)}
 .empty{display:flex;flex-direction:column;gap:12px;align-items:flex-start;padding:40px 0}
 .empty h2{font-size:34px}
-.sum{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:0 0 22px}
+.sum{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin:0 0 22px}
 .num small{font-size:12.5px;color:var(--ink2)}
 td.args{font-family:var(--mono);font-size:12px;max-width:260px;word-break:break-word;color:var(--ink2)}
 .you-no{color:var(--red)}
+.remember{display:flex;flex-wrap:wrap;gap:8px 10px;align-items:center;padding:10px 12px;border:1px dashed var(--inner);background:var(--well)}
+.remember input[type=checkbox]{width:18px;height:18px;accent-color:var(--ink)}
+.remember select{font-family:var(--mono);font-size:13px;padding:3px 6px;border:1px solid var(--inner);background:transparent;color:var(--ink)}
+.remember .muted{flex-basis:100%;font-size:13px}
 @media (max-width:600px){.sum{grid-template-columns:repeat(2,minmax(0,1fr))}.req h2{font-size:30px}.clock .secs{font-size:34px}
   table,thead,tbody,tr,td{display:block}thead{display:none}tr{border-top:1px solid #E8DFC9;padding:8px 0}td{border:none;padding:2px 0}}
 </style>
@@ -87,10 +91,11 @@ function setConn(ok) {
 
 function reqCard(r) {
   const total = Math.max(1, r.deadline - r.created);
-  return `<div class="card req${r.cls === "external" || r.cls === "irreversible" ? " red" : ""}" data-id="${esc(r.id)}"><div class="in">
+  const red = r.confirmable ? (r.suggested === "external" || r.suggested === "irreversible") : (r.cls === "external" || r.cls === "irreversible");
+  return `<div class="card req${red ? " red" : ""}" data-id="${esc(r.id)}"><div class="in">
     <div class="top">
       <div style="display:flex;flex-direction:column;gap:8px;min-width:0">
-        <div class="meta">${stamp(r.cls)}${r.source ? `<span class="kicker">${esc(r.source)}</span>` : ""}</div>
+        <div class="meta">${r.confirmable ? `<span class="stamp">NOT CONFIRMED</span>` : stamp(r.cls)}${r.source ? `<span class="kicker">${esc(r.source)}</span>` : ""}</div>
         <h2>${esc(r.tool)}</h2>
       </div>
       <div class="clock" data-deadline="${r.deadline}" data-total="${total}">
@@ -100,6 +105,7 @@ function reqCard(r) {
     <div class="fuse" data-deadline="${r.deadline}" data-total="${total}"><span></span></div>
     ${r.goal ? `<div class="sec"><span class="kicker">Goal</span><div>${esc(r.goal)}</div></div>` : ""}
     <div class="sec"><span class="kicker">Why asking</span><div>${esc(r.why)}${r.confidence != null ? ` <span class="muted">(model: ${pct(r.confidence)} fine)</span>` : ""}</div></div>
+    ${r.confirmable ? rememberBox(r) : ""}
     <div class="sec"><div class="row" style="justify-content:space-between"><span class="kicker">Arguments</span><span class="edited" hidden>edited</span></div>
       <textarea class="args" spellcheck="false" aria-label="Arguments as JSON">${esc(pretty(r.args))}</textarea></div>
     <input class="note" placeholder="Note (optional): why, for the log and the model" aria-label="Note">
@@ -111,6 +117,17 @@ function reqCard(r) {
       <div class="keys"><span>Edit the JSON above to change what runs.</span></div>
     </div>
   </div></div>`;
+}
+
+const CLASSES = ["read", "undoable", "irreversible", "external"];
+function rememberBox(r) {
+  const opts = CLASSES.map((c) => `<option value="${c}"${c === r.suggested ? " selected" : ""}>${c}</option>`).join("");
+  return `<label class="remember">
+      <input type="checkbox" class="rem-on">
+      <span>On Allow, always treat <b>${esc(r.tool)}</b> as</span>
+      <select class="rem-cls" aria-label="Class to remember">${opts}</select>
+      <span class="muted">The server suggests <b>${esc(r.suggested)}</b> (${esc(r.suggested_why)}). Saved to kiri.toml. Read runs without asking; irreversible and external always ask.</span>
+    </label>`;
 }
 
 function renderWaiting() {
@@ -170,6 +187,8 @@ document.addEventListener("click", async (e) => {
   const card = b.closest(".req"), id = card.dataset.id, r = pending.find((x) => x.id === id);
   const approve = b.dataset.act === "allow", note = card.querySelector(".note").value.trim();
   const body = {id, approve, note};
+  const rem = card.querySelector(".rem-on");
+  if (approve && rem && rem.checked) body.remember = card.querySelector(".rem-cls").value;
   if (approve) {
     let v;
     try { v = JSON.parse(card.querySelector(".args").value); } catch { return toast("Not valid JSON", "Fix the arguments or deny."); }
@@ -179,7 +198,7 @@ document.addEventListener("click", async (e) => {
   card.querySelectorAll("button").forEach((x) => x.disabled = true);
   try {
     await api("/api/decide", body);
-    toast(approve ? "Allowed" : "Denied", `${r ? r.tool : "request"}${body.args ? " with your edits" : ""}`, !approve);
+    toast(approve ? "Allowed" : "Denied", `${r ? r.tool : "request"}${body.args ? " with your edits" : ""}${body.remember ? `, saved as ${body.remember}` : ""}`, !approve);
   } catch (err) {
     toast("Too late", err.message);
   }
@@ -190,6 +209,7 @@ document.addEventListener("click", async (e) => {
 
 function yourCall(row) {
   if (row.decision === "act") return `<span class="muted">not asked</span>`;
+  if (row.decision === "deduped") return `<span class="muted">duplicate, not sent again</span>`;
   if (row.approved === 1) return row.edited ? "allowed, edited" : "allowed";
   if (row.note === "timed out") return `<span class="you-no">timed out</span>`;
   return `<span class="you-no">denied</span>`;
@@ -211,6 +231,7 @@ function renderLog() {
       <div class="num"><small>Asked you</small><b>${asked.length}</b></div>
       <div class="num"><small>You allowed</small><b>${allowed}</b></div>
       <div class="num r"><small>Denied / timed out</small><b>${asked.length - allowed - timed} / ${timed}</b></div>
+      <div class="num"><small>Duplicates stopped</small><b>${rows.filter((r) => r.decision === "deduped").length}</b></div>
     </div>
     ${scored.length ? `<p class="voice" style="margin:0 0 22px">${[
         yes.length ? `When you allowed it unchanged (${yes.length}), the model had said ${avg(yes)} fine on average.` : "",

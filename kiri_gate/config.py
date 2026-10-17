@@ -86,6 +86,37 @@ def _key(name: str) -> str:
     return name if _BARE.match(name) else json.dumps(name)
 
 
+_LINE_KEY = re.compile(r'^\s*("(?:[^"\\]|\\.)*"|[A-Za-z0-9_-]+)\s*=')
+
+
+def confirm(path: str, name: str, cls: Class) -> None:
+    """Move one tool into [tools] with the class you chose, editing kiri.toml in place.
+    Comments and every other line are kept. Called when you tick "remember" on the approval page."""
+    lines: List[str] = []
+    if os.path.exists(path):
+        with open(path, "rb") as f:
+            lines = f.read().decode("utf-8-sig").splitlines()
+    out: List[str] = []
+    for line in lines:
+        m = _LINE_KEY.match(line)
+        if m and not line.lstrip().startswith("#"):
+            k = json.loads(m.group(1)) if m.group(1).startswith('"') else m.group(1)
+            if k == name:
+                continue  # drop the old line, wherever it was
+        out.append(line)
+    entry = f'{_key(name)} = "{cls.value}"  # confirmed on the approval page'
+    for i, line in enumerate(out):
+        if re.match(r"^\s*\[\s*tools\s*\]\s*(#.*)?$", line):
+            out.insert(i + 1, entry)
+            break
+    else:
+        out = ["[tools]", entry, ""] + out
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+        f.write("\n".join(out) + "\n")
+    os.replace(tmp, path)
+
+
 def _parse(text: str) -> Dict[str, Dict[str, Any]]:
     try:
         import tomllib  # Python 3.11+

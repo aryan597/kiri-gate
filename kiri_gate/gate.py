@@ -70,6 +70,7 @@ class Answer:
     approve: bool
     args: Optional[Dict[str, Any]] = None   # edited arguments, if the human changed them
     note: str = ""
+    remember: Optional[str] = None          # MCP proxy only: a class the human chose to save for this tool
 
 
 @dataclass
@@ -154,6 +155,16 @@ class Gate:
     def classes(self) -> Dict[str, Class]:
         return {n: t.cls for n, t in self._tools.items()}
 
+    def reclassify(self, name: str, cls: Class) -> None:
+        """Change a registered tool's class. Only for a human's own decision: the MCP proxy calls this when
+        you confirm a class on the approval page or edit kiri.toml. Never call it from agent or model code."""
+        if not isinstance(cls, Class):
+            raise RegistryError("class must be READ, UNDOABLE, IRREVERSIBLE or EXTERNAL")
+        with self._lock:
+            if name not in self._tools:
+                raise RegistryError(f"unknown tool '{name}'")
+            self._tools[name].cls = cls
+
     # ---- goal ----------------------------------------------------------------
 
     def goal(self, text: str, scope: Optional[str] = None):
@@ -223,6 +234,7 @@ class Gate:
             decision, why, conf = self._route(tool, goal, call_args)
 
         answer: Optional[Answer] = None
+        cls_now = tool.cls  # what it was when decided; a human may reclassify it while answering
         if decision == "ask":
             answer = self.ask(Request(tool.name, tool.cls, redact(dict(call_args), tool.sensitive), goal, why, conf))
             if answer.approve and answer.args is not None:
@@ -231,7 +243,7 @@ class Gate:
                     new_key = make_key(tool.name, call_args, scope=self._key_scope(goal))
                     if new_key != key:  # edited into a different call, whose ledger row nobody checked
                         key, seen = new_key, None
-        self._record(tool, goal, call_args, decision, why, conf, answer)
+        self._record(tool, goal, call_args, decision, why, conf, answer, cls_now)
         if answer is not None and not answer.approve:
             raise Denied(f"{tool.name}: the user said no" + (f" ({answer.note})" if answer.note else ""))
 
@@ -295,10 +307,10 @@ class Gate:
             return "act", f"undoable and {p:.0%} likely fine", p
         return "ask", f"only {p:.0%} likely fine", p
 
-    def _record(self, tool, goal, args, decision, why, conf, answer) -> None:
+    def _record(self, tool, goal, args, decision, why, conf, answer, cls=None) -> None:
         if self.log is None:
             return
-        self.log.record(ts=time.time(), tool=tool.name, cls=tool.cls.name, goal=goal, args=args,
+        self.log.record(ts=time.time(), tool=tool.name, cls=(cls or tool.cls).name, goal=goal, args=args,
                         decision=decision, why=why, confidence=conf,
                         approved=None if answer is None else answer.approve,
                         edited=bool(answer and answer.args is not None), note=answer.note if answer else "",

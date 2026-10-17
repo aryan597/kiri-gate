@@ -36,9 +36,21 @@ KEY_ARG = "idempotency_key"
 MAX_RESULT = 1_000_000  # characters of JSON; a bigger result isn't kept (the DONE state still is)
 
 
+def _norm(v: Any) -> Any:
+    """64 and 64.0 are the same amount: whole floats hash like ints. Strings are left alone ("64" stays "64")."""
+    if isinstance(v, float) and v.is_integer():
+        return int(v)
+    if isinstance(v, dict):
+        return {str(k): _norm(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_norm(x) for x in v]
+    return v
+
+
 def make_key(tool: str, args: Dict[str, Any], scope: str = "") -> str:
-    """Same tool + same arguments + same scope = same key. idempotency_key itself is left out."""
-    clean = {k: v for k, v in args.items() if k != KEY_ARG}
+    """Same tool + same arguments + same scope = same key. idempotency_key itself is left out.
+    Whole numbers match whatever their type (64 == 64.0); everything else must match exactly."""
+    clean = {k: _norm(v) for k, v in args.items() if k != KEY_ARG}
     body = json.dumps([scope, tool, clean], sort_keys=True, default=str, separators=(",", ":"))
     return "kiri-" + hashlib.sha256(body.encode()).hexdigest()[:40]
 
