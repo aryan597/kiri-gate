@@ -4,6 +4,10 @@
 
 Part of [Kiri](https://aryan597.github.io/kiri-gate/): open-source tools and research for agents that take real actions.
 
+[![kiri-gate demo: a refund agent loses a response and retries. With kiri-gate it asks first and catches the repeat; without it, the customer is refunded twice.](docs/demo.gif)](docs/kiri-gate-demo.mp4)
+
+*Simulated replay, not a screen recording: a refund agent loses a response and retries, with kiri-gate on and then off. The measured numbers are from the [Stripe study below](#agents-also-do-things-twice). [Full video (41s)](docs/kiri-gate-demo.mp4).*
+
 In the [ask-or-act benchmark](https://github.com/aryan597/ask-or-act), four models from a local 9B up to Claude Opus 5 each let **4 to 6 unrecoverable actions** through when trusted to decide alone, like sending a recruiter email unasked or paying a bill. This rule took that to **zero on every model**, for about 21 extra questions per 120 actions. kiri-gate is that rule as a library.
 
 ```python
