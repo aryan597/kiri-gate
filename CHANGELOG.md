@@ -5,13 +5,17 @@ From a real install on Linux and a live demo: on a fresh install every tool aske
 - **Fixed: a stale read could re-run an UNKNOWN call** ([#1](https://github.com/aryan597/kiri-gate/issues/1), reported by [@xianmgb-cmyk](https://github.com/xianmgb-cmyk) with a minimal repro). Two identical dedupe calls at once: B reads "absent" and is being scored, A runs, loses its response and is marked UNKNOWN, then B claimed the UNKNOWN row and ran again without asking. `Ledger.claim` now takes `expect`, the state the caller was routed on, and refuses if the row has changed since. The Gate then goes back through reconcile/ask. The MCP proxy had the same check-then-claim gap and gets the same fix.
 - Limits: tested with the in-memory ledger and simulated effects (the C01 schedule). The proxy fix is covered by the ledger unit test, not a concurrent proxy test. `claim()` without `expect` keeps the v0.2.1 behaviour for code calling the ledger directly.
 - 2 new tests for #1. The C01 test fails on v0.2.1 (2 effects, 0 prompts) and passes now (1 effect, 1 prompt).
+- **Fixed: a malformed line could skip the gate.** A client line that isn't valid JSON (for example a `tools/call` with one invalid UTF-8 byte) used to be forwarded to the server unread. The MCP TypeScript SDK decodes invalid bytes with replacement, so the server ran a call kiri-gate never saw. Reproduced against a real SDK 1.32.1 server: a denied charge went through with the bad byte. Lines kiri-gate can't read, and anything that isn't a JSON-RPC object, are now refused with an error and never forwarded. Found in an internal audit after #1.
+- **Fixed: kiri.toml hand edits could be undone.** After the first draft, every `tools/list` rewrote kiri.toml from memory, and a change made inside the same file-timestamp tick wasn't noticed. Either could put back a class you had just changed, so a tool could run without asking. The draft is now written only when there is no kiri.toml, and changes are detected by content, not timestamp.
+- **Fixed: a very deeply nested line stopped the proxy.** It's now refused like any unreadable line.
+- Limits: the bypass needs a client that sends invalid bytes; the model can't produce them through a normal client. Other audit findings (no token on the approval page, 24h replay of identical calls, server labels) are still open.
 - **Confirm classes on the approval page.** A tool not yet in `[tools]` shows what the server suggests ("read, from readOnlyHint") and a "remember" box. Tick it and Allow, and the class is saved to kiri.toml and used from the next call. Off by default, only on Allow, and only for tools not already confirmed, so a tired click can't downgrade anything.
 - **kiri.toml is re-read when it changes.** No client restart after editing it by hand.
 - **Clear reasons.** An unconfirmed tool says so ("isn't confirmed in kiri.toml yet") instead of "irreversible actions always ask", and its card is marked NOT CONFIRMED. First run prints where kiri.toml is and how to confirm tools.
 - **64 and 64.0 are the same call.** Whole-number floats hash like ints in dedupe keys. "64" (a string) and 64.5 are still different.
 - **Log page fixes.** A caught duplicate showed as "denied"; it now says "duplicate, not sent again", with a "Duplicates stopped" count. Rows keep the class the tool had when you decided.
 - The dedupe log row is written before the reply, so anything reading the log right after sees it.
-- 22 new tests (85 in total).
+- 30 new tests (91 in total).
 
 ## v0.2.1: fixes from an outside review
 

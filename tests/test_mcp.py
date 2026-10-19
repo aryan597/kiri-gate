@@ -96,6 +96,49 @@ class ProxyRules(unittest.TestCase):
                                            "delete_file": "irreversible", "send_email": "external",
                                            "mystery": "irreversible"})
 
+    def next_without_id(self):
+        while True:
+            m = self.c.q.get(timeout=10)
+            if m.get("id") is None and "error" in m:
+                return m
+
+    def test_unreadable_line_is_not_forwarded(self):
+        # Audit F1: a tools/call with one invalid UTF-8 byte isn't JSON to Python, but the MCP TypeScript SDK
+        # decodes it with replacement and runs it. It must never reach the server ungated.
+        self.start('[tools]\nsend_email = "external"\n', answer=Answer(False))
+        self.to_proxy.write(b'{"jsonrpc":"2.0","id":99,"method":"tools/call","params":{"name":"send_email",'
+                            b'"arguments":{"to":"a\xff","body":"x"}}}\n')
+        self.to_proxy.flush()
+        self.assertEqual(self.next_without_id()["error"]["code"], -32700)
+        self.to_proxy.write(b'[[{"jsonrpc":"2.0","id":98,"method":"tools/call","params":{"name":"send_email",'
+                            b'"arguments":{"to":"a","body":"x"}}}]]\n')
+        self.to_proxy.flush()
+        self.assertEqual(self.next_without_id()["error"]["code"], -32600)
+        self.assertEqual(self.ran(), [])
+        self.assertEqual(self.ask.asked, [])
+
+    def test_deeply_nested_line_does_not_stop_the_proxy(self):
+        # Audit F8: RecursionError used to kill the client pump and with it the proxy.
+        self.start('[tools]\nread_file = "read"\n')
+        self.to_proxy.write(b"[" * 100000 + b"]" * 100000 + b"\n")
+        self.to_proxy.flush()
+        self.assertEqual(self.next_without_id()["error"]["code"], -32700)
+        self.assertFalse(self.c.call("read_file", path="a")["result"].get("isError"))
+
+    def test_relisting_tools_keeps_hand_edits(self):
+        # Audit F6: after the first draft, every tools/list rewrote kiri.toml from memory, undoing a hand fix.
+        self.start()
+        self.c.request("tools/list")
+        self.proxy._confirm("delete_file", "read")              # a mistaken "remember: read"
+        with open(self.cfg) as f:
+            text = f.read()
+        with open(self.cfg, "w") as f:                          # fixed by hand
+            f.write(text.replace('delete_file = "read"', 'delete_file = "external"'))
+        self.c.request("tools/list")                            # reconnect / list_changed
+        self.assertEqual(kconfig.load(self.cfg).tools["delete_file"].value, "external")
+        self.c.call("delete_file", path="/important")
+        self.assertEqual(len(self.ask.asked), 1)                # it asks again
+
     def test_unconfirmed_tools_always_ask_even_read_only_ones(self):
         self.start()
         self.c.request("tools/list")

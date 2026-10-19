@@ -16,6 +16,7 @@ never reaches the server; after UNKNOWN it goes to the human, whatever its class
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -104,8 +105,11 @@ class Proxy:
                     continue
                 try:
                     msg = json.loads(line)
-                except ValueError:
-                    self._to_server_raw(line)  # not ours to judge; the server will reply with a parse error
+                except (ValueError, RecursionError):
+                    # Never forward what we can't read. A server may read it differently (invalid UTF-8 is
+                    # decoded with replacement by the MCP TypeScript SDK) and run a tools/call we never saw.
+                    self._to_client({"jsonrpc": "2.0", "id": None,
+                                     "error": {"code": -32700, "message": "kiri-gate: parse error, not forwarded"}})
                     continue
                 # Batches were dropped from MCP, but unpack them anyway so no tools/call slips through inside one.
                 for m in (msg if isinstance(msg, list) else [msg]):
@@ -114,8 +118,9 @@ class Proxy:
             self._done.set()
 
     def _from_client(self, msg: Any) -> None:
-        if not isinstance(msg, dict):
-            return self._to_server(msg)
+        if not isinstance(msg, dict):  # e.g. a nested batch: nothing valid looks like this, so it isn't forwarded
+            return self._to_client({"jsonrpc": "2.0", "id": None,
+                                    "error": {"code": -32600, "message": "kiri-gate: invalid request, not forwarded"}})
         method = msg.get("method")
         if method == "tools/call":
             if "id" not in msg:
@@ -228,11 +233,14 @@ class Proxy:
         except (OSError, ValueError) as e:
             _note(f"couldn't save {name} as {cls_name} ({e}); it will keep asking")
 
-    def _mtime(self) -> float:
+    def _mtime(self) -> str:
+        """What kiri.toml looks like now. Its content, not its timestamp: an edit inside the same timestamp tick
+        (fast saves, coarse filesystems) must still be picked up, or an old class keeps applying."""
         try:
-            return os.path.getmtime(self.config_path)
+            with open(self.config_path, "rb") as f:
+                return hashlib.sha256(f.read()).hexdigest()
         except OSError:
-            return 0.0
+            return ""
 
     def _reload_config(self) -> None:
         """Pick up hand edits to kiri.toml without restarting the client."""
@@ -295,7 +303,7 @@ class Proxy:
                     continue
                 try:
                     msg = json.loads(line)
-                except ValueError:
+                except (ValueError, RecursionError):
                     msg = None
                 if isinstance(msg, dict) and "method" not in msg:
                     if self._list_ids.pop(msg.get("id"), False):
@@ -322,7 +330,9 @@ class Proxy:
         for t in tools:
             if isinstance(t, dict) and isinstance(t.get("name"), str):
                 self._seen[t["name"]] = t
-        if not os.path.exists(self.config_path) or self._drafted:
+        # Write the draft once, only when there's no kiri.toml. Rewriting it later would undo hand edits
+        # made since (and could put back a class you just changed).
+        if not os.path.exists(self.config_path):
             try:
                 with open(self.config_path, "w", encoding="utf-8", newline="\n") as f:
                     f.write(kconfig.draft(list(self._seen.values()), self.config.tools))
